@@ -1103,7 +1103,8 @@
       ordered_indices: solveData.ordered_indices,
       ordered_texts: solveData.ordered_texts,
       target_permutation: solveData.ordered_indices,
-      permutation_indices: solveData.permutation_indices
+      permutation_indices: solveData.permutation_indices,
+      optionSelectors: (extracted && Array.isArray(extracted.optionSelectors)) ? extracted.optionSelectors : []
     };
   }
 
@@ -1258,6 +1259,16 @@
       // Apply answer once
       applyCurrentSolution((applyRes) => {
         if (!isAutoRunning) return;
+
+        // HARD ABORT RULE: If selection failed or returned ok: false, never call clickNextOnPage!
+        if (!applyRes || applyRes.ok === false || applyRes.selected === false || !applyRes.success) {
+          stopAutoMode("STOPPED_SELECTION_FAILED (Did not click Submit)");
+          if (window.__QuizZyExtractor && typeof window.__QuizZyExtractor.applyDomHighlight === "function") {
+            const tIdx = (typeof solution.selected_index === "number") ? solution.selected_index : 0;
+            window.__QuizZyExtractor.applyDomHighlight({ selected_index: tIdx });
+          }
+          return;
+        }
 
         // Brief delay before clicking Submit / Next so React state commits
         setTimeout(() => {

@@ -596,6 +596,135 @@
   }
 
   /**
+   * Generates a deterministic CSS selector path for a DOM element.
+   * e.g. #id or div:nth-of-type(1) > div:nth-of-type(2)
+   */
+  function getElementCssPath(el) {
+    if (!el || el.nodeType !== 1) return "";
+    if (el.id && !el.id.includes("quizzy")) {
+      return `#${el.id}`;
+    }
+    const path = [];
+    let curr = el;
+    const doc = el.ownerDocument || (typeof document !== "undefined" ? document : null);
+    const stopNode = doc ? (doc.body || doc.documentElement) : null;
+
+    while (curr && curr.nodeType === 1 && curr !== stopNode && curr !== (doc ? doc.documentElement : null)) {
+      const tag = curr.tagName.toLowerCase();
+      let selector = tag;
+      if (curr.id && !curr.id.includes("quizzy")) {
+        path.unshift(`#${curr.id}`);
+        break;
+      }
+      const firstClass = (curr.className || "").split(/\s+/).find(c => c && !c.includes("quizzy") && !/^(active|selected|checked|hover|focus)$/i.test(c));
+      if (firstClass) {
+        selector += `.${firstClass}`;
+      }
+      let sibling = curr;
+      let nth = 1;
+      while (sibling.previousElementSibling) {
+        sibling = sibling.previousElementSibling;
+        if (sibling.tagName.toLowerCase() === tag) nth++;
+      }
+      selector += `:nth-of-type(${nth})`;
+      path.unshift(selector);
+      curr = curr.parentElement;
+    }
+    return path.join(" > ");
+  }
+
+  /**
+   * Strict Leaf-Option Deduplication:
+   * Excludes QuizZy UI elements, excludes action buttons and footers.
+   * On React styled-components pages (sc-...), an outer option <div> often wraps an inner <div>
+   * or <label> containing the same text. Never includes both a parent element and its descendant!
+   * Keeps only the distinct interactive option row containers (2 to 6 sibling items sharing the same parent container or radio group).
+   */
+  function deduplicateOptionElements(elements) {
+    if (!Array.isArray(elements) || elements.length === 0) return [];
+
+    // Filter out QuizZy elements and action buttons / non-option headers
+    const filtered = elements.filter(el => {
+      if (!el || el.nodeType !== 1) return false;
+      if (isQuizZyInternalElement(el)) return false;
+      if (containsActionButtonOrFooter(el)) return false;
+      const txt = cleanText(el.innerText || el.textContent || "");
+      if (isHeaderOrNavText(txt)) return false;
+      return true;
+    });
+
+    if (filtered.length <= 1) return filtered;
+
+    // Remove any element that contains 2 or more other candidate elements (it is an outer container/wrapper)
+    const withoutContainers = filtered.filter(el => {
+      let containedCount = 0;
+      for (const other of filtered) {
+        if (other !== el && el.contains && el.contains(other)) {
+          containedCount++;
+        }
+      }
+      return containedCount < 2;
+    });
+
+    // Handle 1-on-1 parent/child duplicates:
+    // If element A contains element B: keep the option row container (A) and drop inner descendant (B)
+    const finalElements = [];
+    for (let i = 0; i < withoutContainers.length; i++) {
+      const a = withoutContainers[i];
+      let hasParentInList = false;
+      for (let j = 0; j < withoutContainers.length; j++) {
+        if (i !== j) {
+          const b = withoutContainers[j];
+          if (b.contains && b.contains(a)) {
+            hasParentInList = true;
+            break;
+          }
+        }
+      }
+      if (!hasParentInList) {
+        finalElements.push(a);
+      }
+    }
+
+    return (finalElements.length >= 2 && finalElements.length <= 6) ? finalElements : withoutContainers;
+  }
+
+  /**
+   * Resolves the per-option row root container for an option element.
+   * Walks up leafEl.parentElement while the parent exists, is not document.body (or docElement),
+   * does NOT contain action buttons (SUBMIT, NEXT, SHOW ANSWER, SKIP) or footers,
+   * and contains at most 1 option from allCandidateLeaves (stopping right before the shared parent
+   * container that holds >= 2 options).
+   */
+  function resolveOptionRowRoot(leafEl, allCandidateLeaves) {
+    if (!leafEl || !leafEl.parentElement) return leafEl;
+    let curr = leafEl;
+    const doc = leafEl.ownerDocument || (typeof document !== "undefined" ? document : null);
+    const stopNode = doc ? (doc.body || doc.documentElement) : null;
+    const leaves = Array.isArray(allCandidateLeaves) && allCandidateLeaves.length > 0 ? allCandidateLeaves : [leafEl];
+
+    while (curr && curr.parentElement && curr.parentElement !== stopNode) {
+      const parent = curr.parentElement;
+      if (isQuizZyInternalElement(parent)) break;
+      if (containsActionButtonOrFooter(parent)) break;
+
+      // Count how many candidate leaves are contained within parent
+      let containedCount = 0;
+      for (const leaf of leaves) {
+        if (leaf && (leaf === parent || (parent.contains && parent.contains(leaf)))) {
+          containedCount++;
+        }
+      }
+      // Stop right before the container that holds >= 2 options
+      if (containedCount >= 2) {
+        break;
+      }
+      curr = parent;
+    }
+    return curr;
+  }
+
+  /**
    * Pure read-only DOM extraction function.
    * Performs ZERO mutations on the host page DOM.
    * 
@@ -930,6 +1059,23 @@
       }
     }
 
+    // Deduplicate option elements (strict leaf-option and button exclusion)
+    optionElements = deduplicateOptionElements(optionElements);
+
+    // Resolve each option element to its per-option row root container
+    if (optionElements.length >= 2) {
+      const resolvedRows = optionElements.map(el => resolveOptionRowRoot(el, optionElements));
+      const uniqueRows = [];
+      for (const row of resolvedRows) {
+        if (!uniqueRows.includes(row)) {
+          uniqueRows.push(row);
+        }
+      }
+      if (uniqueRows.length === optionElements.length) {
+        optionElements = uniqueRows;
+      }
+    }
+
     // Check if option elements indicate drag-and-drop / ordering
     if (optionElements.length > 0) {
       isDraggableOrder = optionElements.some((el) => {
@@ -1013,17 +1159,21 @@
       }
     }
 
+    const optionSelectors = (Array.isArray(optionElements) ? optionElements : []).map(el => getElementCssPath(el));
+
     const result = {
       success: true,
       subject: subject || "General",
       q_type: qType,
       question: question,
       options: options,
+      optionSelectors: optionSelectors,
       meta: {
         url: (typeof window !== "undefined" && window.location) ? window.location.href : "",
         timestamp: Date.now(),
         matched_selectors: matchedSelectors,
-        options_count: options.length
+        options_count: options.length,
+        option_selectors: optionSelectors
       }
     };
 
@@ -1123,6 +1273,9 @@
     isExplanationOrFeedback,
     findQuizCard,
     findClasslessOptionElements,
+    getElementCssPath,
+    deduplicateOptionElements,
+    resolveOptionRowRoot,
     extractQuizFromDom,
     applyDomHighlight,
     isQuizZyInternalElement
@@ -1136,6 +1289,8 @@
   const __QUIZZY_EXTRACTION_RESULT__ = (typeof document !== "undefined")
     ? extractQuizFromDom()
     : { success: false, error: "No document object available for extraction." };
+
+  Object.assign(__QUIZZY_EXTRACTION_RESULT__, QuizZyExtractor);
 
   if (typeof window !== "undefined") {
     window.__QUIZZY_LAST_EXTRACTION__ = __QUIZZY_EXTRACTION_RESULT__;

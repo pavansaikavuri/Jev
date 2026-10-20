@@ -8,10 +8,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+import os
 # Add project root to sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+os.environ["QUIZZY_OFFLINE_TEST_MODE"] = "1"
 
 
 def test_manifest_host_permissions():
@@ -921,7 +923,10 @@ async function main() {
     el("div", "sc-circle sc-kLLOBW", {}),
     el("div", "sc-opt-label sc-iBPRYJ", {}, ["B increases chance of A"])
   ]);
-  opt0Row.addEventListener("click", () => { opt0ClickCount++; });
+  opt0Row.addEventListener("click", () => {
+    opt0ClickCount++;
+    opt0Row.className = "sc-opt-row sc-bczRLJ selected";
+  });
 
   const ccbpDoc = el("html", "", {}, [
     el("head"),
@@ -1100,8 +1105,14 @@ async function main() {
   let innerLabelClicked = 0;
   const innerCircle0 = el("div", "sc-circle sc-kLLOBW", {});
   const innerLabel0 = el("div", "sc-opt-label sc-iBPRYJ", {}, ["P(Flu|Cough) = 0.71, P(Cold|Cough) = 0.25"]);
-  innerCircle0.addEventListener("click", () => { innerCircleClicked++; });
-  innerLabel0.addEventListener("click", () => { innerLabelClicked++; });
+  innerCircle0.addEventListener("click", () => {
+    innerCircleClicked++;
+    innerCircle0.className = "sc-circle sc-kLLOBW selected";
+  });
+  innerLabel0.addEventListener("click", () => {
+    innerLabelClicked++;
+    innerLabel0.className = "sc-opt-label sc-iBPRYJ selected";
+  });
 
   const ccbpRow0 = el("div", "sc-opt-row sc-bczRLJ", {}, [innerCircle0, innerLabel0]);
   const ccbpRow1 = el("div", "sc-opt-row sc-bczRLJ", {}, [

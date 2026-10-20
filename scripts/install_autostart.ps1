@@ -50,7 +50,11 @@ try {
 
 # 3. Immediately launch the supervisor hidden and verify health
 Write-Host "[3/3] Launching background supervisor and verifying backend health..."
-Start-Process "wscript.exe" -ArgumentList "`"$HiddenVbs`"" -WindowStyle Hidden
+try {
+    Start-ScheduledTask -TaskName "QuizZyBackendAutoStart" -ErrorAction Stop
+} catch {
+    Start-Process "wscript.exe" -ArgumentList "`"$HiddenVbs`"" -WindowStyle Hidden
+}
 
 Write-Host "Waiting for backend at http://127.0.0.1:8000/health..."
 $deadline = (Get-Date).AddSeconds(30)

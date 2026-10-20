@@ -555,10 +555,117 @@
   }
 
   /**
+   * Generates a deterministic CSS selector path for a DOM element.
+   * e.g. #id or div:nth-of-type(1) > div:nth-of-type(2)
+   */
+  function getElementCssPath(el) {
+    if (!el || el.nodeType !== 1) return "";
+    if (el.id && !el.id.includes("quizzy")) {
+      return `#${el.id}`;
+    }
+    const path = [];
+    let curr = el;
+    const doc = el.ownerDocument || (typeof document !== "undefined" ? document : null);
+    const stopNode = doc ? (doc.body || doc.documentElement) : null;
+
+    while (curr && curr.nodeType === 1 && curr !== stopNode && curr !== (doc ? doc.documentElement : null)) {
+      const tag = curr.tagName.toLowerCase();
+      let selector = tag;
+      if (curr.id && !curr.id.includes("quizzy")) {
+        path.unshift(`#${curr.id}`);
+        break;
+      }
+      const firstClass = (curr.className || "").split(/\s+/).find(c => c && !c.includes("quizzy") && !/^(active|selected|checked|hover|focus)$/i.test(c));
+      if (firstClass) {
+        selector += `.${firstClass}`;
+      }
+      let sibling = curr;
+      let nth = 1;
+      while (sibling.previousElementSibling) {
+        sibling = sibling.previousElementSibling;
+        if (sibling.tagName.toLowerCase() === tag) nth++;
+      }
+      selector += `:nth-of-type(${nth})`;
+      path.unshift(selector);
+      curr = curr.parentElement;
+    }
+    return path.join(" > ");
+  }
+
+  /**
+   * Strict Leaf-Option Deduplication:
+   * Excludes QuizZy UI elements, excludes action buttons and footers.
+   * On React styled-components pages (sc-...), an outer option <div> often wraps an inner <div>
+   * or <label> containing the same text. Never includes both a parent element and its descendant!
+   * Keeps only the distinct interactive option row containers (2 to 6 sibling items sharing the same parent container or radio group).
+   */
+  function deduplicateOptionElements(elements) {
+    if (!Array.isArray(elements) || elements.length === 0) return [];
+
+    // Filter out QuizZy elements and action buttons / non-option headers
+    const filtered = elements.filter(el => {
+      if (!el || el.nodeType !== 1) return false;
+      if (isQuizZyInternalElement(el)) return false;
+      if (containsActionButtonOrFooter(el)) return false;
+      const txt = cleanText(el.innerText || el.textContent || "");
+      if (isHeaderOrNavText(txt)) return false;
+      return true;
+    });
+
+    if (filtered.length <= 1) return filtered;
+
+    // Remove any element that contains 2 or more other candidate elements (it is an outer container/wrapper)
+    const withoutContainers = filtered.filter(el => {
+      let containedCount = 0;
+      for (const other of filtered) {
+        if (other !== el && el.contains && el.contains(other)) {
+          containedCount++;
+        }
+      }
+      return containedCount < 2;
+    });
+
+    // Handle 1-on-1 parent/child duplicates:
+    // If element A contains element B: keep the option row container (A) and drop inner descendant (B)
+    const finalElements = [];
+    for (let i = 0; i < withoutContainers.length; i++) {
+      const a = withoutContainers[i];
+      let hasParentInList = false;
+      for (let j = 0; j < withoutContainers.length; j++) {
+        if (i !== j) {
+          const b = withoutContainers[j];
+          if (b.contains && b.contains(a)) {
+            hasParentInList = true;
+            break;
+          }
+        }
+      }
+      if (!hasParentInList) {
+        finalElements.push(a);
+      }
+    }
+
+    return (finalElements.length >= 2 && finalElements.length <= 6) ? finalElements : withoutContainers;
+  }
+
+  /**
    * Finds option elements using custom selector or deterministic heuristics.
    * Excludes header/nav text and explanation boxes matching extractor.js rules.
    */
-  function findOptionElements(customSelector) {
+  function findOptionElements(customSelector, optionSelectors) {
+    const doc = (typeof document !== "undefined") ? document : null;
+
+    // 0. Deterministic optionSelectors locator metadata from extractor
+    if (Array.isArray(optionSelectors) && optionSelectors.length >= 2 && doc) {
+      try {
+        const directQueried = optionSelectors.map(sel => doc.querySelector(sel)).filter(Boolean);
+        if (directQueried.length === optionSelectors.length) {
+          const deduped = deduplicateOptionElements(directQueried);
+          if (deduped.length >= 2) return deduped;
+        }
+      } catch (_) {}
+    }
+
     // 1. Direct memory parity with extractor.js if extracted in the same world (zero DOM mutation)
     if (!customSelector && typeof window !== "undefined" && Array.isArray(window.__QUIZZY_LAST_OPTION_ELEMENTS__) && window.__QUIZZY_LAST_OPTION_ELEMENTS__.length >= 2) {
       const allConnected = window.__QUIZZY_LAST_OPTION_ELEMENTS__.every(el => el && el.isConnected !== false);
@@ -570,22 +677,22 @@
             return currentText === expectedText || currentText.includes(expectedText) || expectedText.includes(currentText);
           });
           if (textMatches) {
-            return window.__QUIZZY_LAST_OPTION_ELEMENTS__;
+            return deduplicateOptionElements(window.__QUIZZY_LAST_OPTION_ELEMENTS__);
           }
         } else {
-          return window.__QUIZZY_LAST_OPTION_ELEMENTS__;
+          return deduplicateOptionElements(window.__QUIZZY_LAST_OPTION_ELEMENTS__);
         }
       }
     }
 
-    const doc = (typeof document !== "undefined") ? document : null;
     if (!doc) return [];
 
     if (customSelector) {
       const customMatches = Array.from(doc.querySelectorAll(customSelector))
         .filter(isVisible)
         .filter((el) => !isExplanationOrFeedback(el) && !isHeaderOrNavText(cleanText(el.innerText || el.textContent || "")));
-      if (customMatches.length >= 2) return customMatches;
+      const deduped = deduplicateOptionElements(customMatches);
+      if (deduped.length >= 2) return deduped;
     }
 
     // Check for radio button groups (supporting CSS-hidden radio inputs with visible labels)
@@ -602,8 +709,9 @@
         }
       }
     }
-    if (radioRows.length >= 2 && radioRows.length <= 10) {
-      return radioRows;
+    const dedupedRadios = deduplicateOptionElements(radioRows);
+    if (dedupedRadios.length >= 2 && dedupedRadios.length <= 10) {
+      return dedupedRadios;
     }
 
     const optionHeuristics = [
@@ -627,49 +735,79 @@
       const matches = Array.from(doc.querySelectorAll(sel))
         .filter(isVisible)
         .filter((el) => !isExplanationOrFeedback(el) && !isHeaderOrNavText(cleanText(el.innerText || el.textContent || "")));
-      if (matches.length >= 2 && matches.length <= 10) {
-        return matches;
+      const deduped = deduplicateOptionElements(matches);
+      if (deduped.length >= 2 && deduped.length <= 10) {
+        return deduped;
       }
     }
 
     // Classless styled-components option group discovery (e.g. learning.ccbp.in)
     const quizCard = findQuizCard(doc);
     const classlessOptions = findClasslessOptionElements(quizCard || doc, doc);
-    if (classlessOptions.length >= 2) {
-      return classlessOptions;
+    const dedupedClassless = deduplicateOptionElements(classlessOptions);
+    if (dedupedClassless.length >= 2) {
+      return dedupedClassless;
     }
 
     return [];
   }
 
   /**
-   * Resolves the Option Row Container and an ordered sequence of clickable candidate targets.
-   * Walks up to find the container that is a child of the 2-6 options parent container.
+   * Resolves the per-option row root container for an option element.
+   * Walks up leafEl.parentElement while the parent exists, is not document.body (or docElement),
+   * does NOT contain action buttons (SUBMIT, NEXT, SHOW ANSWER, SKIP) or footers,
+   * and contains at most 1 option from allCandidateLeaves (stopping right before the shared parent
+   * container that holds >= 2 options).
    */
-  function resolveOptionRowAndTargets(optEl) {
-    if (!optEl) return { rowEl: null, candidates: [] };
+  function resolveOptionRowRoot(leafEl, allCandidateLeaves) {
+    if (!leafEl || !leafEl.parentElement) return leafEl;
+    let curr = leafEl;
+    const doc = leafEl.ownerDocument || (typeof document !== "undefined" ? document : null);
+    const stopNode = doc ? (doc.body || doc.documentElement) : null;
+    const leaves = Array.isArray(allCandidateLeaves) && allCandidateLeaves.length > 0 ? allCandidateLeaves : null;
 
-    // 1. Find the Option Row Container (rowEl)
-    let rowEl = optEl;
-    let curr = optEl;
-    for (let depth = 0; depth < 4; depth++) {
-      if (!curr || !curr.parentElement) break;
+    while (curr && curr.parentElement && curr.parentElement !== stopNode) {
       const parent = curr.parentElement;
-      const siblings = Array.from(parent.children || []).filter(isVisible);
-      if (siblings.length >= 2 && siblings.length <= 6) {
-        rowEl = curr;
-        break;
+      if (isQuizZyInternalElement(parent)) break;
+      if (containsActionButtonOrFooter(parent)) break;
+
+      if (leaves) {
+        let containedCount = 0;
+        for (const leaf of leaves) {
+          if (leaf && (leaf === parent || (parent.contains && parent.contains(leaf)))) {
+            containedCount++;
+          }
+        }
+        if (containedCount >= 2) break;
+      } else {
+        const children = Array.from(parent.children || []).filter(c => isVisible(c) && !isQuizZyInternalElement(c));
+        if (children.length >= 2 && children.length <= 6 && children.includes(curr)) {
+          break;
+        }
       }
       curr = parent;
     }
+    return curr;
+  }
+
+  /**
+   * Resolves the Option Row Container and an ordered sequence of clickable candidate targets.
+   * Uses resolveOptionRowRoot to find the per-option row container.
+   */
+  function resolveOptionRowAndTargets(optEl, allOptions) {
+    if (!optEl) return { rowEl: null, candidates: [] };
+
+    // 1. Find the Option Row Container (rowEl)
+    const rowEl = resolveOptionRowRoot(optEl, allOptions);
 
     // 2. Gather candidate click targets in priority order:
-    //    1) <input type="radio" | "checkbox">
-    //    2) <label>
-    //    3) [role="radio"] / [role="option"] / button
-    //    4) rowEl itself (full container)
-    //    5) optEl itself (if different from rowEl)
-    //    6) rowEl.firstElementChild (radio circle indicator) and rowEl.lastElementChild (text)
+    //    1) rowEl itself (full container)
+    //    2) <input type="radio" | "checkbox">
+    //    3) <label>
+    //    4) [role="radio"] / [role="option"] / button
+    //    5) Indicator circle / dot child
+    //    6) Primary text child element
+    //    7) optEl itself (if different from rowEl)
     const candidates = [];
     const seen = new Set();
 
@@ -680,38 +818,41 @@
       }
     }
 
-    // 1) Radio inputs
+    // 1) rowEl itself (full container)
+    addCandidate(rowEl);
+
+    // 2) Radio inputs
     const inputs = rowEl.querySelectorAll ? Array.from(rowEl.querySelectorAll("input[type='radio'], input[type='checkbox']")) : [];
     if (["INPUT"].includes(rowEl.tagName)) inputs.push(rowEl);
     inputs.forEach(addCandidate);
 
-    // 2) Labels
+    // 3) Labels
     const labels = rowEl.querySelectorAll ? Array.from(rowEl.querySelectorAll("label")) : [];
     if (rowEl.tagName === "LABEL") labels.push(rowEl);
     labels.forEach(addCandidate);
 
-    // 3) Role or button targets
+    // 4) Role or button targets
     const roles = rowEl.querySelectorAll ? Array.from(rowEl.querySelectorAll("[role='radio'], [role='option'], button")) : [];
     roles.forEach(addCandidate);
 
-    // 4) Indicator circle (firstElementChild)
+    // 5) Indicator circle/dot child (firstElementChild or matching classes)
+    if (rowEl.querySelectorAll) {
+      rowEl.querySelectorAll("[class*='circle'], [class*='dot'], [class*='indicator'], [class*='radio']").forEach(addCandidate);
+    }
     if (rowEl.firstElementChild && rowEl.firstElementChild !== rowEl) {
       addCandidate(rowEl.firstElementChild);
     }
 
-    // 5) optEl itself (if different from rowEl)
-    if (optEl && optEl !== rowEl) {
-      addCandidate(optEl);
-    }
-
-    // 6) text container (lastElementChild)
+    // 6) text container (lastElementChild or matching classes)
     const lastChild = rowEl.lastElementChild || (rowEl.childNodes && rowEl.childNodes.length > 0 ? rowEl.childNodes[rowEl.childNodes.length - 1] : null);
     if (lastChild && lastChild.nodeType === 1 && lastChild !== rowEl) {
       addCandidate(lastChild);
     }
 
-    // 7) rowEl itself (full container)
-    addCandidate(rowEl);
+    // 7) optEl itself (if different from rowEl)
+    if (optEl && optEl !== rowEl) {
+      addCandidate(optEl);
+    }
 
     return { rowEl, candidates };
   }
@@ -747,9 +888,20 @@
       buttons: 1
     };
 
-    // Sequence: pointerdown -> mousedown -> pointerup -> mouseup
-    ["pointerdown", "mousedown", "pointerup", "mouseup"].forEach((type) => {
+    // Cascade: pointerover -> mouseover -> pointerdown -> mousedown -> focus -> pointerup -> mouseup
+    ["pointerover", "mouseover", "pointerdown", "mousedown", "focus", "pointerup", "mouseup"].forEach((type) => {
       try {
+        if (type === "focus") {
+          try {
+            if (typeof el.focus === "function") el.focus();
+          } catch (_) {}
+          const focusEv = (typeof FocusEvent !== "undefined")
+            ? new FocusEvent("focus", { bubbles: false, cancelable: false })
+            : ((typeof Event !== "undefined") ? new Event("focus", { bubbles: false, cancelable: false }) : null);
+          if (focusEv) el.dispatchEvent(focusEv);
+          return;
+        }
+
         let ev;
         if (type.startsWith("pointer") && typeof PointerEvent !== "undefined") {
           ev = new PointerEvent(type, Object.assign({}, mouseInit, { pointerId: 1, pointerType: "mouse" }));
@@ -789,39 +941,172 @@
   }
 
   /**
-   * Captures selection state snapshot of an option row.
+   * Captures selection state snapshot of an option row and page context.
+   * Inspects entire rowEl subtree plus rowEl.parentElement for style, class, aria, and input state.
    */
-  function captureOptionSnapshot(rowEl) {
-    if (!rowEl) return null;
+  function capturePreClickSnapshot(optionEl, allOptionEls, docRef) {
+    const doc = docRef || (optionEl ? optionEl.ownerDocument : null) || (typeof document !== "undefined" ? document : null);
+    if (!optionEl) return null;
 
     let inputsChecked = false;
-    const inputs = rowEl.querySelectorAll ? Array.from(rowEl.querySelectorAll("input[type='radio'], input[type='checkbox']")) : [];
-    if (rowEl.tagName === "INPUT") inputs.push(rowEl);
+    const inputs = optionEl.querySelectorAll ? Array.from(optionEl.querySelectorAll("input[type='radio'], input[type='checkbox']")) : [];
+    if (optionEl.tagName === "INPUT") inputs.push(optionEl);
     inputsChecked = inputs.some(i => i.checked === true);
 
-    const classes = [rowEl.className || ""];
-    if (rowEl.querySelectorAll) {
-      rowEl.querySelectorAll("*").forEach(c => classes.push(c.className || ""));
+    const classes = [optionEl.className || ""];
+    if (optionEl.parentElement) classes.push(optionEl.parentElement.className || "");
+    if (optionEl.querySelectorAll) {
+      optionEl.querySelectorAll("*").forEach(c => classes.push(c.className || ""));
     }
     const classNames = classes.join(" ");
 
-    const aria = (rowEl.getAttribute ? (rowEl.getAttribute("aria-checked") || rowEl.getAttribute("aria-selected") || rowEl.getAttribute("data-state") || "") : "");
+    const aria = [
+      optionEl.getAttribute ? (optionEl.getAttribute("aria-checked") || optionEl.getAttribute("aria-selected") || optionEl.getAttribute("data-state") || "") : ""
+    ];
+    if (optionEl.parentElement && optionEl.parentElement.getAttribute) {
+      aria.push(optionEl.parentElement.getAttribute("aria-checked") || optionEl.parentElement.getAttribute("aria-selected") || optionEl.parentElement.getAttribute("data-state") || "");
+    }
+    if (optionEl.querySelectorAll) {
+      optionEl.querySelectorAll("[aria-checked], [aria-selected], [data-state]").forEach(c => {
+        aria.push(c.getAttribute("aria-checked") || c.getAttribute("aria-selected") || c.getAttribute("data-state") || "");
+      });
+    }
+
+    function getStylesFor(node) {
+      if (!node || node.nodeType !== 1) return "";
+      try {
+        const cs = window.getComputedStyle(node);
+        if (!cs) return "";
+        return `${cs.backgroundColor || ""}|${cs.borderColor || ""}|${cs.outline || ""}|${cs.boxShadow || ""}|${cs.color || ""}`;
+      } catch (_) {
+        return "";
+      }
+    }
 
     let styles = "";
     if (typeof window !== "undefined" && typeof window.getComputedStyle === "function") {
       try {
-        const cs = window.getComputedStyle(rowEl);
-        styles = `${cs.backgroundColor}|${cs.borderColor}|${cs.outline}|${cs.color}`;
-        if (rowEl.firstElementChild) {
-          const csCircle = window.getComputedStyle(rowEl.firstElementChild);
-          styles += `::circle:${csCircle.backgroundColor}|${csCircle.borderColor}|${csCircle.outline}`;
+        styles = `row:${getStylesFor(optionEl)}`;
+        if (optionEl.parentElement) {
+          styles += `::parent:${getStylesFor(optionEl.parentElement)}`;
+        }
+        if (optionEl.querySelectorAll) {
+          optionEl.querySelectorAll("*").forEach((c, idx) => {
+            const st = getStylesFor(c);
+            if (st && st !== "||||") styles += `::d${idx}:${st}`;
+          });
         }
       } catch (_) {}
     }
 
-    const htmlLength = (rowEl.innerHTML || "").length;
+    let submitDisabled = null;
+    if (doc) {
+      const submitBtn = doc.querySelector("button[type='submit'], input[type='submit'], button.btn-submit");
+      if (submitBtn) {
+        submitDisabled = submitBtn.disabled;
+      }
+    }
 
-    return { inputsChecked, classNames, aria, styles, htmlLength };
+    const htmlLength = (optionEl.innerHTML || "").length;
+
+    return { inputsChecked, classNames, aria: aria.join("|"), styles, submitDisabled, htmlLength };
+  }
+
+  const captureOptionSnapshot = capturePreClickSnapshot;
+
+  /**
+   * Mandatory Pre-Submit Selection Verification Gate:
+   * Inspects 5 selection signals across rowEl, its full subtree, and its parentElement:
+   * a) A nested <input type="radio"|"checkbox"> has .checked === true.
+   * b) optionEl, child, or parent has aria-checked === "true" or aria-selected === "true" or data-state === "checked".
+   * c) optionEl's className or a child's or parent's className changed compared to preClickSnapshot.
+   * d) optionEl's, child's, or parent's computed styles changed compared to preClickSnapshot.
+   * e) The SUBMIT button on the page transitioned from disabled to enabled.
+   */
+  function verifyOptionSelected(optionEl, allOptionEls, preClickSnapshot, docRef) {
+    if (!optionEl) return false;
+    const doc = docRef || (optionEl ? optionEl.ownerDocument : null) || (typeof document !== "undefined" ? document : null);
+
+    // a) A nested <input type="radio"|"checkbox"> has .checked === true
+    const inputs = optionEl.querySelectorAll ? Array.from(optionEl.querySelectorAll("input[type='radio'], input[type='checkbox']")) : [];
+    if (optionEl.tagName === "INPUT" && ["radio", "checkbox"].includes((optionEl.type || "").toLowerCase())) {
+      inputs.push(optionEl);
+    }
+    if (inputs.some(i => i.checked === true)) {
+      return true;
+    }
+
+    // b) optionEl, child, or parent has aria-checked === "true" or aria-selected === "true" or data-state === "checked"
+    const ariaChecks = [
+      optionEl.getAttribute ? optionEl.getAttribute("aria-checked") : null,
+      optionEl.getAttribute ? optionEl.getAttribute("aria-selected") : null,
+      optionEl.getAttribute ? optionEl.getAttribute("data-state") : null
+    ];
+    if (optionEl.parentElement) {
+      ariaChecks.push(optionEl.parentElement.getAttribute ? optionEl.parentElement.getAttribute("aria-checked") : null);
+      ariaChecks.push(optionEl.parentElement.getAttribute ? optionEl.parentElement.getAttribute("aria-selected") : null);
+      ariaChecks.push(optionEl.parentElement.getAttribute ? optionEl.parentElement.getAttribute("data-state") : null);
+    }
+    if (optionEl.querySelectorAll) {
+      optionEl.querySelectorAll("[aria-checked='true'], [aria-selected='true'], [data-state='checked']").forEach(() => ariaChecks.push("true"));
+    }
+    if (ariaChecks.some(a => a === "true" || a === "checked")) {
+      return true;
+    }
+
+    // c) optionEl's className or a child's/parent's className changed compared to preClickSnapshot
+    const currClasses = [optionEl.className || ""];
+    if (optionEl.parentElement) currClasses.push(optionEl.parentElement.className || "");
+    if (optionEl.querySelectorAll) {
+      optionEl.querySelectorAll("*").forEach(c => currClasses.push(c.className || ""));
+    }
+    const currClassNames = currClasses.join(" ");
+    if (preClickSnapshot && currClassNames !== preClickSnapshot.classNames) {
+      return true;
+    }
+    if (/\b(?:selected|active|checked|is-selected|is-active)\b/i.test(currClassNames)) {
+      return true;
+    }
+
+    // d) optionEl's, child's, or parent's computed styles changed compared to preClickSnapshot
+    if (typeof window !== "undefined" && typeof window.getComputedStyle === "function") {
+      try {
+        function getStylesFor(node) {
+          if (!node || node.nodeType !== 1) return "";
+          try {
+            const cs = window.getComputedStyle(node);
+            if (!cs) return "";
+            return `${cs.backgroundColor || ""}|${cs.borderColor || ""}|${cs.outline || ""}|${cs.boxShadow || ""}|${cs.color || ""}`;
+          } catch (_) {
+            return "";
+          }
+        }
+
+        let currStyles = `row:${getStylesFor(optionEl)}`;
+        if (optionEl.parentElement) {
+          currStyles += `::parent:${getStylesFor(optionEl.parentElement)}`;
+        }
+        if (optionEl.querySelectorAll) {
+          optionEl.querySelectorAll("*").forEach((c, idx) => {
+            const st = getStylesFor(c);
+            if (st && st !== "||||") currStyles += `::d${idx}:${st}`;
+          });
+        }
+        if (preClickSnapshot && preClickSnapshot.styles && currStyles !== preClickSnapshot.styles) {
+          return true;
+        }
+      } catch (_) {}
+    }
+
+    // e) The SUBMIT button on the page transitioned from disabled to enabled
+    if (doc && preClickSnapshot && preClickSnapshot.submitDisabled === true) {
+      const submitBtn = doc.querySelector("button[type='submit'], input[type='submit'], button.btn-submit");
+      if (submitBtn && submitBtn.disabled === false) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /**
@@ -829,46 +1114,36 @@
    */
   function didOptionSelectionChange(rowEl, beforeSnapshot) {
     if (!rowEl || !beforeSnapshot) return false;
-    const after = captureOptionSnapshot(rowEl);
-    if (!after) return false;
-
-    if (after.inputsChecked !== beforeSnapshot.inputsChecked) return true;
-    if (after.classNames !== beforeSnapshot.classNames) return true;
-    if (after.aria !== beforeSnapshot.aria) return true;
-    if (after.styles !== beforeSnapshot.styles) return true;
-    if (after.htmlLength !== beforeSnapshot.htmlLength) return true;
-
-    return false;
+    return verifyOptionSelected(rowEl, [], beforeSnapshot);
   }
 
   /**
-   * Smart React click target resolution for MCQ options with multi-level escalation
-   * and state change verification (stops immediately when selected!).
+   * React Selection Cascade:
+   * 1. Scrolls optionEl smoothly into view.
+   * 2. Resolves per-option row root container.
+   * 3. Dispatches pointerover -> mouseover -> pointerdown -> mousedown -> focus -> pointerup -> mouseup -> click
+   *    across:
+   *    a) The resolved rowEl itself
+   *    b) Descendant radio/checkbox or radio indicator (circle/dot child)
+   *    c) The primary text child element
+   * 4. Updates controlled <input type="radio"> via HTMLInputElement.prototype descriptor if present.
    */
-  function triggerOptionSelect(targetEl) {
-    if (!targetEl) return false;
+  function triggerReactSelection(optionEl) {
+    if (!optionEl) return false;
 
-    // 1. Locate rowEl (walking up at most 3 levels from targetEl to find option row whose parent holds 2-6 sibling options, or targetEl itself)
-    let rowEl = targetEl;
-    let curr = targetEl;
-    for (let depth = 0; depth < 3; depth++) {
-      if (!curr || !curr.parentElement) break;
-      const parent = curr.parentElement;
-      const siblings = Array.from(parent.children || []).filter(isVisible);
-      if (siblings.length >= 2 && siblings.length <= 6) {
-        rowEl = curr;
-        break;
+    // 1. Scroll optionEl smoothly into view
+    try {
+      if (typeof optionEl.scrollIntoView === "function") {
+        optionEl.scrollIntoView({ behavior: "instant", block: "nearest" });
       }
-      curr = parent;
-    }
+    } catch (_) {}
 
-    if (typeof window !== "undefined") {
-      window.__QUIZZY_LAST_SELECTED_OPTION__ = rowEl;
-    }
+    // 2. Locate row container and candidate targets
+    const { rowEl, candidates } = resolveOptionRowAndTargets(optionEl);
+    const win = (typeof window !== "undefined") ? window : null;
+    const doc = (typeof document !== "undefined") ? document : (optionEl.ownerDocument || null);
 
-    const doc = (typeof document !== "undefined") ? document : (rowEl.ownerDocument || null);
-
-    // 2. Case 1: Standard or Sibling <input type="radio" | "checkbox"> / <label> exists inside rowEl (or linked via label[for])
+    // 3. Case 1: Standard or Sibling <input type="radio" | "checkbox"> / <label> exists inside rowEl
     let inputEl = null;
     if (rowEl.tagName === "INPUT" && ["radio", "checkbox"].includes((rowEl.type || "").toLowerCase())) {
       inputEl = rowEl;
@@ -923,39 +1198,47 @@
       return true;
     }
 
-    // 3. Case 2: Classless / Custom React Option Row (No <input> inside rowEl)
-    const beforeSnapshot = captureOptionSnapshot(rowEl);
-
-    // If already visually checked or aria-checked is true, no need to re-click
+    // 4. Custom React Option Row:
+    const beforeSnapshot = capturePreClickSnapshot(rowEl);
     if (beforeSnapshot && (beforeSnapshot.inputsChecked || beforeSnapshot.aria === "true")) {
       return true;
     }
 
-    // Step A: Primary Click on rowEl FIRST with bubbles: true
+    // Step A: Dispatch cascade across resolved rowEl itself
     dispatchRealisticClick(rowEl, true);
-
-    // If selection changed on rowEl, return immediately
-    if (didOptionSelectionChange(rowEl, beforeSnapshot)) {
+    if (verifyOptionSelected(rowEl, [], beforeSnapshot)) {
       return true;
     }
 
-    // Step B: If rowEl did NOT change visual state, fire direct non-bubbling clicks
-    // on rowEl.firstElementChild (circle) and rowEl.lastElementChild (label) (and targetEl if different from rowEl)
-    const childCandidates = [];
-    if (rowEl.firstElementChild && rowEl.firstElementChild !== rowEl) {
-      childCandidates.push(rowEl.firstElementChild);
+    // Step B: Dispatch cascade across descendant input / indicator
+    const indicatorTargets = [];
+    if (rowEl.querySelectorAll) {
+      rowEl.querySelectorAll("input[type='radio'], input[type='checkbox'], [role='radio'], [role='checkbox'], [class*='circle'], [class*='dot'], [class*='indicator'], [class*='radio']").forEach(el => {
+        if (el !== rowEl && !indicatorTargets.includes(el)) indicatorTargets.push(el);
+      });
     }
-    const lastChild = rowEl.lastElementChild;
-    if (lastChild && lastChild !== rowEl && !childCandidates.includes(lastChild)) {
-      childCandidates.push(lastChild);
+    if (rowEl.firstElementChild && rowEl.firstElementChild !== rowEl && !indicatorTargets.includes(rowEl.firstElementChild)) {
+      indicatorTargets.push(rowEl.firstElementChild);
     }
-    if (targetEl && targetEl !== rowEl && !childCandidates.includes(targetEl)) {
-      childCandidates.push(targetEl);
+    for (const child of indicatorTargets) {
+      dispatchRealisticClick(child, true);
+      if (verifyOptionSelected(rowEl, [], beforeSnapshot)) {
+        return true;
+      }
     }
 
-    for (const child of childCandidates) {
-      dispatchRealisticClick(child, false);
-      if (didOptionSelectionChange(rowEl, beforeSnapshot)) {
+    // Step C: Dispatch cascade across primary text child element
+    const textTargets = [];
+    if (optionEl && optionEl !== rowEl && !indicatorTargets.includes(optionEl)) {
+      textTargets.push(optionEl);
+    }
+    const lastChild = rowEl.lastElementChild;
+    if (lastChild && lastChild !== rowEl && !indicatorTargets.includes(lastChild) && !textTargets.includes(lastChild)) {
+      textTargets.push(lastChild);
+    }
+    for (const txt of textTargets) {
+      dispatchRealisticClick(txt, true);
+      if (verifyOptionSelected(rowEl, [], beforeSnapshot)) {
         return true;
       }
     }
@@ -964,29 +1247,64 @@
   }
 
   /**
-   * Executes plain DOM click on targeted MCQ option.
+   * Compatibility alias for triggerReactSelection.
+   */
+  function triggerOptionSelect(targetEl) {
+    return triggerReactSelection(targetEl);
+  }
+
+  /**
+   * Executes plain DOM click on targeted MCQ option with Mandatory Pre-Submit Verification Gate.
    * Handles 1:1 text parity with extractor.js and React 16-18 controlled radio selection.
    */
   function executeMcqAction(payload) {
-    const options = findOptionElements(payload.optionsSelector);
+    const doc = (typeof document !== "undefined") ? document : null;
+    let options = [];
+
+    // Check payload.optionSelectors first if provided
+    if (payload && Array.isArray(payload.optionSelectors) && payload.optionSelectors.length >= 2 && doc) {
+      try {
+        const directQueried = payload.optionSelectors.map(sel => doc.querySelector(sel)).filter(Boolean);
+        if (directQueried.length === payload.optionSelectors.length) {
+          options = deduplicateOptionElements(directQueried);
+        }
+      } catch (_) {}
+    }
+
     if (options.length === 0) {
-      return { success: false, error: "No option elements found on host page." };
+      options = findOptionElements(payload ? payload.optionsSelector : null, payload ? payload.optionSelectors : null);
+    }
+
+    if (options.length === 0) {
+      return { ok: false, success: false, selected: false, error: "OPTION_SELECTION_FAILED" };
+    }
+
+    // Resolve each option element to its per-option row root container
+    if (options.length >= 2) {
+      const resolved = options.map(el => resolveOptionRowRoot(el, options));
+      const unique = [];
+      for (const r of resolved) {
+        if (!unique.includes(r)) unique.push(r);
+      }
+      if (unique.length === options.length) {
+        options = unique;
+      }
     }
 
     let targetIndex = null;
-    if (typeof payload.targetIndex === "number" && payload.targetIndex >= 0) {
+    if (payload && typeof payload.targetIndex === "number" && payload.targetIndex >= 0) {
       targetIndex = payload.targetIndex;
-    } else if (typeof payload.selected_index === "number" && payload.selected_index >= 0) {
+    } else if (payload && typeof payload.selected_index === "number" && payload.selected_index >= 0) {
       targetIndex = payload.selected_index;
     }
 
     // Check if payload.letter, payload.canonical_key, or payload.answer is a single synthetic letter "A"–"F"
     let syntheticLetter = "";
-    if (typeof payload.letter === "string" && /^[A-F]$/i.test(payload.letter.trim())) {
+    if (payload && typeof payload.letter === "string" && /^[A-F]$/i.test(payload.letter.trim())) {
       syntheticLetter = payload.letter.trim().toUpperCase();
-    } else if (typeof payload.canonical_key === "string" && /^[A-F]$/i.test(payload.canonical_key.trim())) {
+    } else if (payload && typeof payload.canonical_key === "string" && /^[A-F]$/i.test(payload.canonical_key.trim())) {
       syntheticLetter = payload.canonical_key.trim().toUpperCase();
-    } else if (typeof payload.answer === "string" && /^[A-F]$/i.test(payload.answer.trim())) {
+    } else if (payload && typeof payload.answer === "string" && /^[A-F]$/i.test(payload.answer.trim())) {
       syntheticLetter = payload.answer.trim().toUpperCase();
     }
 
@@ -996,8 +1314,8 @@
     }
 
     // Never try to text-match a single synthetic letter "A"–"F" against full option strings!
-    let rawTargetText = payload.targetText || payload.selected_text || null;
-    if (!rawTargetText && payload.answer && !/^[A-F]$/i.test(String(payload.answer).trim())) {
+    let rawTargetText = (payload && (payload.targetText || payload.selected_text)) || null;
+    if (!rawTargetText && payload && payload.answer && !/^[A-F]$/i.test(String(payload.answer).trim())) {
       rawTargetText = payload.answer;
     }
 
@@ -1042,8 +1360,10 @@
     // 3. Valid targetIndex fallback (0 <= targetIndex < options.length)
     if (targetIndex === null || typeof targetIndex !== "number" || targetIndex < 0 || targetIndex >= options.length) {
       return {
+        ok: false,
         success: false,
-        error: `Target option out of bounds or unmatched (targetIndex: ${targetIndex}, options: ${options.length}, targetText: ${rawTargetText})`
+        selected: false,
+        error: "OPTION_SELECTION_FAILED"
       };
     }
 
@@ -1055,11 +1375,49 @@
       window.__QUIZZY_LAST_ACTION_PAYLOAD__ = payload;
     }
 
-    // Smart React option selection
-    const clicked = triggerOptionSelect(targetEl);
+    // MANDATORY PRE-SUBMIT SELECTION VERIFICATION GATE
+    const preClickSnapshot = capturePreClickSnapshot(targetEl, options, doc);
+
+    // Attempt 1: Full React selection event cascade
+    triggerReactSelection(targetEl);
+
+    // Verify selection signal
+    let selected = verifyOptionSelected(targetEl, options, preClickSnapshot, doc);
+
+    // Retry on unverified selection: targeted inner child click + elementFromPoint
+    if (!selected) {
+      const innerTarget = targetEl.firstElementChild || (targetEl.querySelector ? targetEl.querySelector("input, label, span, div") : null) || targetEl;
+      dispatchRealisticClick(innerTarget, true);
+
+      if (doc && typeof doc.elementFromPoint === "function" && typeof targetEl.getBoundingClientRect === "function") {
+        try {
+          const rect = targetEl.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            const pointEl = doc.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+            if (pointEl && pointEl !== targetEl) {
+              dispatchRealisticClick(pointEl, true);
+            }
+          }
+        } catch (_) {}
+      }
+
+      selected = verifyOptionSelected(targetEl, options, preClickSnapshot, doc);
+    }
+
+    // HARD ABORT RULE: If selection verification failed after retry, return failure
+    if (!selected) {
+      return {
+        ok: false,
+        success: false,
+        selected: false,
+        error: "OPTION_SELECTION_FAILED"
+      };
+    }
 
     return {
-      success: clicked,
+      ok: true,
+      success: true,
+      selected: true,
       action: "mcq_click",
       selected_index: targetIndex,
       option_text: optionCleanTexts[targetIndex] || cleanText(targetEl.innerText || targetEl.textContent)
@@ -1524,20 +1882,35 @@
    */
   function executeAction(payload) {
     if (!payload || (!payload.q_type && !payload.question_type)) {
-      return { success: false, error: "Payload missing q_type" };
+      return { ok: false, success: false, selected: false, error: "Payload missing q_type" };
     }
 
     const qType = String(payload.q_type || payload.question_type).toLowerCase().trim();
 
+    let res;
     if (qType === "mcq") {
-      return executeMcqAction(payload);
+      res = executeMcqAction(payload);
     } else if (qType === "text") {
-      return executeTextAction(payload);
+      res = executeTextAction(payload);
     } else if (qType === "order") {
-      return executeOrderAction(payload);
+      res = executeOrderAction(payload);
     } else {
-      return { success: false, error: `Unsupported action q_type: ${qType}` };
+      return { ok: false, success: false, selected: false, error: `Unsupported action q_type: ${qType}` };
     }
+
+    if (res && (res.selected === false || res.ok === false || res.success === false)) {
+      return Object.assign({}, res, {
+        ok: false,
+        success: false,
+        selected: false,
+        error: res.error || "OPTION_SELECTION_FAILED"
+      });
+    }
+
+    return Object.assign({}, res, {
+      ok: res.ok !== undefined ? res.ok : res.success,
+      selected: res.selected !== undefined ? res.selected : res.success
+    });
   }
 
   // Idempotent Escape key listener for host page emergency kill switch
@@ -1575,13 +1948,19 @@
     isRadioOrOptionVisible,
     findQuizCard,
     findClasslessOptionElements,
+    getElementCssPath,
+    deduplicateOptionElements,
+    resolveOptionRowRoot,
     dispatchClick,
     dispatchRealisticClick,
     resolveOptionRowAndTargets,
     captureOptionSnapshot,
+    capturePreClickSnapshot,
+    verifyOptionSelected,
     didOptionSelectionChange,
     findOptionElements,
     triggerOptionSelect,
+    triggerReactSelection,
     executeMcqAction,
     executeTextAction,
     simulateDragDrop,

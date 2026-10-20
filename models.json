@@ -15,10 +15,10 @@
   },
   "arbiter": {
     "provider": "groq",
-    "family": "llama",
-    "model": "llama-3.3-70b-versatile",
-    "tier": "S",
-    "priority": 1
+    "model": "openai/gpt-oss-20b",
+    "family": "gpt-oss",
+    "tier": "A",
+    "priority": 3
   },
   "fallback": {
     "provider": "openrouter",
@@ -73,11 +73,11 @@
     }
   ],
   "timeouts_ms": {
-    "groq_parallel_timeout_ms": 2200,
-    "openrouter_fallback_timeout_ms": 2150,
+    "groq_parallel_timeout_ms": 2000,
+    "openrouter_fallback_timeout_ms": 2200,
     "searxng_timeout_ms": 650,
     "searxng_grounded_llm_timeout_ms": 900,
     "s_tier_soft_escalation_ms": 1300,
-    "hard_total_budget_ms": 3000
+    "hard_total_budget_ms": 4000
   }
 }

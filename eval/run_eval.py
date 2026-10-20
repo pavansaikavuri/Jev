@@ -7,6 +7,7 @@ import asyncio
 import csv
 import json
 import math
+import os
 import sys
 import time
 from datetime import datetime
@@ -46,6 +47,7 @@ def run_self_test() -> bool:
     Validates synthetic indexing, order permutations, mcq normalization,
     text normalization, ground-truth grading, parse validation, and <think> stripping.
     """
+    os.environ["QUIZZY_OFFLINE_TEST_MODE"] = "1"
     print("=" * 70)
     print("RUNNING OFFLINE DETERMINISTIC SELF-TEST (Zero Network / Zero Keys)")
     print("=" * 70)

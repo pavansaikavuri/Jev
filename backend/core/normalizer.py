@@ -118,10 +118,57 @@ def normalize_text_answer(text: str) -> str:
     return s
 
 
+def parse_math_numeric_value(val: Any) -> Optional[float]:
+    """Parse numeric, fraction (a/b), percentage, or LaTeX frac value from a string."""
+    if val is None:
+        return None
+    s = str(val).strip()
+    # Strip decorative prefix if present e.g. "Option D: 2/36" -> "2/36"
+    s = re.sub(r"^(?:option|choice)?\s*[\(\[]?[A-Fa-f][\)\]]?[\.\:\-\s]+", "", s, flags=re.IGNORECASE).strip()
+    if not s:
+        return None
+    # LaTeX frac e.g. \frac{1}{18} or \dfrac{2}{36}
+    frac_match = re.search(r"\\d?frac\{([^{}]+)\}\{([^{}]+)\}", s)
+    if frac_match:
+        try:
+            num = float(frac_match.group(1).strip())
+            den = float(frac_match.group(2).strip())
+            if den != 0:
+                return num / den
+        except Exception:
+            pass
+    # Standard fraction a/b: e.g. 1/18, 2/36, -1/6
+    std_frac = re.search(r"^\s*([+-]?\d+(?:\.\d+)?)\s*/\s*([+-]?\d+(?:\.\d+)?)\s*$", s)
+    if std_frac:
+        try:
+            num = float(std_frac.group(1))
+            den = float(std_frac.group(2))
+            if den != 0:
+                return num / den
+        except Exception:
+            pass
+    # Percentage e.g. 50% -> 0.5
+    pct_match = re.search(r"^\s*([+-]?\d+(?:\.\d+)?)\s*%\s*$", s)
+    if pct_match:
+        try:
+            return float(pct_match.group(1)) / 100.0
+        except Exception:
+            pass
+    # Float / Integer e.g. 0.0556, 1260
+    float_match = re.search(r"^\s*([+-]?\d+(?:\.\d+)?)\s*$", s)
+    if float_match:
+        try:
+            return float(float_match.group(1))
+        except Exception:
+            pass
+    return None
+
+
 def normalize_mcq_answer(raw_answer: Any, options: List[str]) -> NormalizedAnswer:
     """
     Normalize an MCQ answer against a list of 2-6 options.
-    Accepts synthetic letter ('A', 'B', etc.) or option text.
+    Accepts synthetic letter ('A', 'B', etc.), prefixed letter ('Option D: 2/36', 'B) 1/6'),
+    full option text, or mathematically equivalent numeric/fraction values ('1/18' for '2/36').
     Returns NormalizedAnswer with canonical_key ('B'), selected_index (1), selected_text.
     """
     num_options = len(options)
@@ -167,8 +214,8 @@ def normalize_mcq_answer(raw_answer: Any, options: List[str]) -> NormalizedAnswe
                 )
 
     # Step 3: Explicit Label Prefix Extraction & Fallback
-    # Check if purely a single letter wrapped in parens/brackets, e.g. '(B)', '[B]', 'Option B', 'B.'
-    wrapped_match = re.match(r"^(?:option\s+)?(?:\(?\[?([A-Fa-f])\)\]?[\.\:\)]?)$", raw_str, re.IGNORECASE)
+    # Check common prefixes: "Option A", "Option D: 2/36", "Choice B", "B) 1/6", "B. Mitochondrion", "(C)", "[A]"
+    wrapped_match = re.match(r"^(?:option|choice)?\s*\(?\[?([A-Fa-f])\)?\]?[\.\:\)]?$", raw_str, re.IGNORECASE)
     if wrapped_match:
         cand = wrapped_match.group(1).upper()
         if cand in valid_letters:
@@ -180,10 +227,9 @@ def normalize_mcq_answer(raw_answer: Any, options: List[str]) -> NormalizedAnswe
                 raw_answer=raw_answer,
             )
 
-    # Explicit label prefix, e.g. 'A) ...', 'A. ...', 'A: ...', '(A) ...'
-    prefix_match = re.match(r"^(?:option\s+)?(?:\(?([A-Fa-f])[\.\)\:\-]\s*|\(([A-Fa-f])\)\s*)", raw_str, re.IGNORECASE)
+    prefix_match = re.match(r"^(?:option|choice)?\s*(?:\(?([A-Fa-f])[\.\)\:\-]\s*|\(([A-Fa-f])\)\s*|\[([A-Fa-f])\]\s*)(.*)$", raw_str, re.IGNORECASE)
     if prefix_match:
-        cand = (prefix_match.group(1) or prefix_match.group(2)).upper()
+        cand = (prefix_match.group(1) or prefix_match.group(2) or prefix_match.group(3)).upper()
         if cand in valid_letters:
             idx = ord(cand) - 65
             return NormalizedAnswer(
@@ -206,11 +252,11 @@ def normalize_mcq_answer(raw_answer: Any, options: List[str]) -> NormalizedAnswe
                 raw_answer=raw_answer,
             )
 
-    # Substring match if unambiguous
+    # Step 4: Substring match if unambiguous
     norm_raw = normalize_text_answer(raw_str)
     matches = [
         i for i, opt in enumerate(options)
-        if norm_raw and norm_raw in normalize_text_answer(opt)
+        if norm_raw and (norm_raw in normalize_text_answer(opt) or normalize_text_answer(opt) in norm_raw)
     ]
     if len(matches) == 1:
         idx = matches[0]
@@ -221,6 +267,28 @@ def normalize_mcq_answer(raw_answer: Any, options: List[str]) -> NormalizedAnswe
             selected_text=options[idx],
             raw_answer=raw_answer,
         )
+
+    # Step 5: Mathematical / Numeric Equivalence Fallback for MCQ
+    # If the LLM returned a fraction, decimal, or reduced fraction (e.g. "1/18" or "0.0556" when option is "2/36")
+    val_ans = parse_math_numeric_value(raw_str)
+    if val_ans is not None:
+        num_matches = []
+        for i, opt in enumerate(options):
+            val_opt = parse_math_numeric_value(opt)
+            if val_opt is not None:
+                if abs(val_ans - val_opt) < 1e-6:
+                    num_matches.append(i)
+                elif val_opt != 0 and abs((val_ans - val_opt) / val_opt) < 1e-4:
+                    num_matches.append(i)
+        if len(num_matches) == 1:
+            idx = num_matches[0]
+            letter = chr(65 + idx)
+            return NormalizedAnswer(
+                canonical_key=letter,
+                selected_index=idx,
+                selected_text=options[idx],
+                raw_answer=raw_answer,
+            )
 
     raise NormalizationError(
         f"Unable to normalize MCQ answer '{raw_answer}' with valid options {valid_letters}"

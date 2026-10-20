@@ -81,7 +81,7 @@ def build_user_prompt(
         lines.append("")
 
     if q_type_clean == "mcq":
-        lines.append("Select the single correct option. Return the synthetic letter in 'answer'.")
+        lines.append("Solve carefully and verify math/logic step-by-step internally without emitting <think> tags. Output ONLY {\"answer\": \"<single letter A, B, C, or D>\", \"reason\": \"<under 20 words>\"}.")
     elif q_type_clean == "order":
         letters = [chr(65 + i) for i in range(len(options))]
         lines.append(
@@ -94,7 +94,7 @@ def build_user_prompt(
     if search_snippets:
         lines.append("Use the factual evidence in <untrusted_search_context> to resolve the answer.")
 
-    lines.append('Remember: compute calculation inside "reason" FIRST, then write synthetic letter in "answer". Output ONLY raw JSON: {"reason": "...", "answer": "..."}. /no_think')
+    lines.append('Remember: verify calculation inside "reason" FIRST, then write single letter in "answer". Output ONLY raw JSON: {"reason": "...", "answer": "..."}. /no_think')
     return "\n".join(lines)
 
 

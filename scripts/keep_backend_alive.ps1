@@ -16,6 +16,12 @@ $LockFile = Join-Path $RepoRoot "backend\supervisor.lock"
 $LogFile  = Join-Path $RepoRoot "backend\server.log"
 $ErrFile  = Join-Path $RepoRoot "backend\server.err.log"
 $PythonW  = Join-Path $RepoRoot ".venv\Scripts\pythonw.exe"
+if (-not (Test-Path $PythonW)) {
+    $parentVenv = Join-Path (Split-Path $RepoRoot -Parent) ".venv\Scripts\pythonw.exe"
+    if (Test-Path $parentVenv) {
+        $PythonW = $parentVenv
+    }
+}
 $HealthUrl = "http://127.0.0.1:8000/health"
 
 # Ensure backend directory exists
@@ -92,11 +98,16 @@ function Start-BackendProcess {
     Check-LogRotation
     Stop-StalePortProcess
     
-    $argsList = @(
-        "-m", "uvicorn", "backend.app:app",
-        "--host", "127.0.0.1",
-        "--port", "8000"
-    )
+    $runServerScript = Join-Path $RepoRoot "backend\run_server.py"
+    if (Test-Path $runServerScript) {
+        $argsList = @($runServerScript)
+    } else {
+        $argsList = @(
+            "-m", "uvicorn", "backend.app:app",
+            "--host", "127.0.0.1",
+            "--port", "8000"
+        )
+    }
     
     Start-Process -FilePath $PythonW `
                   -ArgumentList $argsList `
@@ -135,5 +146,5 @@ while ($true) {
         }
     } catch {}
     
-    Start-Sleep -Seconds 15
+    Start-Sleep -Seconds 5
 }

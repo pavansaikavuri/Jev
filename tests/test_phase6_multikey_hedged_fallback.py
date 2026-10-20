@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, patch
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
+os.environ["QUIZZY_OFFLINE_TEST_MODE"] = "1"
 
 import httpx
 from fastapi.testclient import TestClient
@@ -44,11 +45,24 @@ from backend.core.llm_client import (
     run_hedged_openrouter_fallback,
     solve_question,
 )
+import pytest
 from backend.core.normalizer import NormalizedAnswer
 from backend.core.parser import ParsedLLMResponse
 
 
+@pytest.fixture(autouse=True)
+def clean_quarantine_fixture():
+    """Ensure every test in phase 6 starts with a clean slate for quarantine."""
+    reset_key_quarantine()
+    reset_model_quarantine()
+    yield
+    reset_key_quarantine()
+    reset_model_quarantine()
+
+
 def test_1_non_chat_model_rejection():
+    reset_key_quarantine()
+    reset_model_quarantine()
     """
     Test 1: Non-Chat Model Rejection.
     Strictly reject embedding, reranker, content-safety, guard, whisper, and tts slugs.
@@ -616,9 +630,9 @@ def test_6_tier_hierarchy_and_two_wave_cascade():
 
     async def mock_call_s_fast(client, provider, model, messages, api_key, timeout_ms, q_type, options, *args, **kwargs):
         nonlocal wave2_called
-        if "gpt-oss" in model or model == "primary_a":
+        if model == cfg["primary_a"]["model"] or model == "primary_a":
             return ('{"answer": "A"}', parsed_a, norm_a, 50.0, None)
-        if "qwen" in model or model == "primary_b":
+        if model == cfg["primary_b"]["model"] or model == "primary_b":
             return ('{"answer": "B"}', parsed_b, norm_b, 50.0, None)
         # S-Tier Wave 1 model: fast success in 40ms agreeing with A
         if model == "nvidia/nemotron-3-ultra-550b-a55b:free":
@@ -653,12 +667,12 @@ def test_6_tier_hierarchy_and_two_wave_cascade():
 
     async def mock_call_s_fails(client, provider, model, messages, api_key, timeout_ms, q_type, options, *args, **kwargs):
         nonlocal wave2_dispatched
-        if "gpt-oss" in model or model == "primary_a":
+        if model == cfg["primary_a"]["model"] or model == "primary_a":
             return ('{"answer": "A"}', parsed_a, norm_a, 50.0, None)
-        if "qwen" in model or model == "primary_b":
+        if model == cfg["primary_b"]["model"] or model == "primary_b":
             return ('{"answer": "B"}', parsed_b, norm_b, 50.0, None)
-        # S-Tier Wave 1 models fail immediately
-        if "nemotron-3-ultra-550b" in model or "nemotron-3-super-120b" in model:
+        # S-Tier Wave 1 models and Groq arbiter fail immediately
+        if "gpt-oss-20b" in model or "nemotron-3-ultra-550b" in model or "nemotron-3-super-120b" in model:
             return (None, None, None, 30.0, "RATE_LIMIT_429")
         # Wave 2 A-tier model succeeds
         if "gemma-4-26b" in model:
@@ -706,7 +720,7 @@ def test_7_non_destructive_check_models():
 
     async def mock_client_get(self, url, *args, **kwargs):
         if "groq.com" in str(url):
-            return MockResponse({"data": [{"id": "openai/gpt-oss-120b"}, {"id": "qwen/qwen3.8-27b"}]})
+            return MockResponse({"data": [{"id": "openai/gpt-oss-120b"}, {"id": "qwen/qwen3.8-27b"}, {"id": "openai/gpt-oss-20b"}]})
         if "openrouter.ai" in str(url):
             return MockResponse({
                 "data": [

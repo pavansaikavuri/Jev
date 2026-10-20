@@ -1162,7 +1162,8 @@ document.addEventListener("DOMContentLoaded", () => {
           permutation_indices: solution.permutation_indices,
           ordered_texts: solution.ordered_texts,
           optionsSelector: selectors.optionsSelector,
-          textInputSelector: selectors.textInputSelector
+          textInputSelector: selectors.textInputSelector,
+          optionSelectors: (extracted && extracted.optionSelectors) ? extracted.optionSelectors : []
         };
 
         chrome.runtime.sendMessage({
@@ -1171,7 +1172,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }, (actionRes) => {
           if (!isAutoRunning || killSwitchTriggered) return;
 
-          if (!actionRes || !actionRes.success) {
+          if (!actionRes || !actionRes.success || actionRes.ok === false || actionRes.selected === false) {
             // Check if Order was unmoved
             if (solution.q_type === "order" && actionRes && actionRes.unmoved) {
               setTelemetryState("PAUSED_ORDER_SWAP", `[Step ${currentStepNum}] Synthetic drag unmoved. Review swap guide above, reorder blocks manually, then click Resume.`);
@@ -1179,9 +1180,22 @@ document.addEventListener("DOMContentLoaded", () => {
               return;
             }
 
-            // General action failure
+            // General action failure or option selection verification failure
             isAutoRunning = false;
-            setTelemetryState("STOPPED_ERROR", `[Step ${currentStepNum}] DOM action failed: ${actionRes ? actionRes.error : "Unknown"}`);
+            const isSelectionFailure = (actionRes && (actionRes.error === "OPTION_SELECTION_FAILED" || actionRes.selected === false || actionRes.ok === false));
+            const failReason = isSelectionFailure
+              ? "STOPPED_SELECTION_FAILED (Did not click Submit)"
+              : `[Step ${currentStepNum}] DOM action failed: ${actionRes ? actionRes.error : "Unknown"}`;
+
+            setTelemetryState("STOPPED_ERROR", failReason);
+            showAlert(`Auto Mode Halted: ${failReason}`, true);
+
+            // Highlight winning option in host page so user can click manually
+            chrome.runtime.sendMessage({
+              action: "APPLY_DOM_HIGHLIGHT",
+              payload: { selected_index: targetIdx }
+            });
+
             if (btnKillSwitch) btnKillSwitch.classList.add("hidden");
             if (btnStartAuto) btnStartAuto.classList.remove("hidden");
             return;

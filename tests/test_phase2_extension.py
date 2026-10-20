@@ -14,6 +14,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+os.environ["QUIZZY_OFFLINE_TEST_MODE"] = "1"
+
 from fastapi.testclient import TestClient
 from backend.app import app
 from backend.core.normalizer import SYNTHETIC_LABELS, normalize_mcq_answer, normalize_order_answer

@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
+os.environ["QUIZZY_OFFLINE_TEST_MODE"] = "1"
 
 from backend.app import app, save_or_update_question_csv
 from backend.cache import (

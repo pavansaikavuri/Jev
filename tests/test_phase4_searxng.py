@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
+os.environ["QUIZZY_OFFLINE_TEST_MODE"] = "1"
 
 from backend.app import app
 from backend.cache import cache_solution, get_cached_solution, init_db
@@ -120,7 +121,7 @@ def test_2_prompt_injection_and_snippet_formatting():
     print("  -> Passed HTML tag stripping and prompt-injection-safe isolation inside <untrusted_search_context>.")
 
 
-async def test_3_disagreement_rescued_by_searxng():
+def test_3_disagreement_rescued_by_searxng():
     """Test 3: Primary disagreement rescued by SearXNG grounded verification."""
     print("\n[Test 3] Testing Disagreement Rescued by SearXNG Grounding...")
 
@@ -174,12 +175,12 @@ async def test_3_disagreement_rescued_by_searxng():
          patch("backend.core.llm_client.get_searxng_config", return_value=("http://127.0.0.1:8080", True)), \
          patch("backend.core.llm_client.is_searxng_circuit_open", return_value=False):
 
-        solver_res = await solve_question(
+        solver_res = asyncio.run(solve_question(
             subject="Geography",
             q_type="mcq",
             question="What is the capital of Australia?",
             options=["Sydney", "Melbourne", "Canberra", "Perth"],
-        )
+        ))
 
         assert solver_res.status == "OK"
         assert solver_res.confidence_tier == "MEDIUM_SEARXNG_GROUNDED", f"Unexpected tier: {solver_res.confidence_tier}"
@@ -238,41 +239,44 @@ async def test_3_disagreement_rescued_by_searxng():
             print("  -> Passed Zero-Poison Cache save & hit for MEDIUM_SEARXNG_GROUNDED.")
 
 
-async def test_4_circuit_breaker_and_offline_fail_open():
+def test_4_circuit_breaker_and_offline_fail_open():
     """Test 4: Circuit breaker trips on connection error and fails open in < 5 ms."""
     print("\n[Test 4] Testing Circuit Breaker & Offline Fail-Open Behavior...")
 
     reset_searxng_circuit()
     assert is_searxng_circuit_open() is False, "Circuit must be initially closed"
 
-    # Query unreachable port to trigger ConnectError
-    async with httpx.AsyncClient() as client:
-        t0 = time.perf_counter()
-        snippets = await fetch_searxng_snippets(
-            client=client,
-            query="test query",
-            timeout_ms=500,
-            base_url="http://127.0.0.1:59999",  # Non-existent port
-        )
-        elapsed_connect_ms = (time.perf_counter() - t0) * 1000.0
+    async def _async_circuit_check():
+        # Query unreachable port to trigger ConnectError
+        async with httpx.AsyncClient() as client:
+            t0 = time.perf_counter()
+            snippets = await fetch_searxng_snippets(
+                client=client,
+                query="test query",
+                timeout_ms=500,
+                base_url="http://127.0.0.1:59999",  # Non-existent port
+            )
+            elapsed_connect_ms = (time.perf_counter() - t0) * 1000.0
 
-        assert snippets == [], "Offline SearXNG must return empty snippets"
-        assert is_searxng_circuit_open() is True, "Circuit breaker must trip to OPEN on connect failure"
-        print(f"  -> Circuit breaker tripped after connect error in {elapsed_connect_ms:.1f}ms.")
+            assert snippets == [], "Offline SearXNG must return empty snippets"
+            assert is_searxng_circuit_open() is True, "Circuit breaker must trip to OPEN on connect failure"
+            print(f"  -> Circuit breaker tripped after connect error in {elapsed_connect_ms:.1f}ms.")
 
-        # Second call while circuit is open: must fail open immediately (< 5 ms)
-        t_check = time.perf_counter()
-        fast_snippets = await fetch_searxng_snippets(
-            client=client,
-            query="test query 2",
-            timeout_ms=500,
-            base_url="http://127.0.0.1:59999",
-        )
-        elapsed_trip_ms = (time.perf_counter() - t_check) * 1000.0
+            # Second call while circuit is open: must fail open immediately (< 5 ms)
+            t_check = time.perf_counter()
+            fast_snippets = await fetch_searxng_snippets(
+                client=client,
+                query="test query 2",
+                timeout_ms=500,
+                base_url="http://127.0.0.1:59999",
+            )
+            elapsed_trip_ms = (time.perf_counter() - t_check) * 1000.0
 
-        assert fast_snippets == []
-        assert elapsed_trip_ms < 5.0, f"Circuit-breaker fail-open took {elapsed_trip_ms:.2f}ms, expected < 5.0ms"
-        print(f"  -> Immediate fail-open while circuit open: {elapsed_trip_ms:.3f}ms (< 5ms budget) [PASS]")
+            assert fast_snippets == []
+            assert elapsed_trip_ms < 5.0, f"Circuit-breaker fail-open took {elapsed_trip_ms:.2f}ms, expected < 5.0ms"
+            print(f"  -> Immediate fail-open while circuit open: {elapsed_trip_ms:.3f}ms (< 5ms budget) [PASS]")
+
+    asyncio.run(_async_circuit_check())
 
     # Check GET /health reporting circuit status
     with TestClient(app) as test_client:
@@ -331,8 +335,8 @@ def run_all_phase4_tests():
 
     test_1_factual_classifier_and_query_builder()
     test_2_prompt_injection_and_snippet_formatting()
-    asyncio.run(test_3_disagreement_rescued_by_searxng())
-    asyncio.run(test_4_circuit_breaker_and_offline_fail_open())
+    test_3_disagreement_rescued_by_searxng()
+    test_4_circuit_breaker_and_offline_fail_open()
     test_5_extension_ui_wiring_audit()
 
     print("\n" + "=" * 70)

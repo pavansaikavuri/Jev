@@ -8,10 +8,10 @@ scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)
 psScript = fso.BuildPath(scriptDir, "keep_backend_alive.ps1")
 
 If Not fso.FileExists(psScript) Then
-    psScript = "c:\Users\Jaswanth\Downloads\Projects\QuizZy\scripts\keep_backend_alive.ps1"
+    psScript = "c:\Users\jassh\Projects\QuizZy\QuizZy\scripts\keep_backend_alive.ps1"
 End If
 
-cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File """ & psScript & """"
+cmd = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File """ & psScript & """"
 WshShell.Run cmd, 0, False
 
 Set WshShell = Nothing
