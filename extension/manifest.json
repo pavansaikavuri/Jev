@@ -8,12 +8,27 @@
     "activeTab",
     "scripting",
     "storage",
-    "tabs"
+    "tabs",
+    "webNavigation"
   ],
   "host_permissions": [
     "<all_urls>",
     "http://127.0.0.1:8000/*",
     "http://localhost:8000/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "http://localhost/*",
+        "http://127.0.0.1/*",
+        "http://localhost:*/*",
+        "http://127.0.0.1:*/*",
+        "https://*.staging.quizzy.internal/*"
+      ],
+      "js": ["stealth_shield.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
   ],
   "background": {
     "service_worker": "background.js"
@@ -23,5 +38,31 @@
   },
   "action": {
     "default_title": "Open QuizZy"
+  },
+  "commands": {
+    "trigger_solve": {
+      "suggested_key": {
+        "default": "Alt+S"
+      },
+      "description": "Extract and solve current question"
+    },
+    "trigger_apply": {
+      "suggested_key": {
+        "default": "Alt+A"
+      },
+      "description": "Apply winning answer or write code into editor"
+    },
+    "trigger_auto_loop": {
+      "suggested_key": {
+        "default": "Alt+N"
+      },
+      "description": "Submit and advance / Run coding loop"
+    },
+    "open_popup_hud": {
+      "suggested_key": {
+        "default": "Alt+M"
+      },
+      "description": "Open detached stealth Popup HUD"
+    }
   }
 }

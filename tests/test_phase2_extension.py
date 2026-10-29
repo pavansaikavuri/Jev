@@ -45,10 +45,12 @@ def test_manifest_compliance():
     assert any("127.0.0.1:8000" in hp for hp in host_permissions), "Missing 127.0.0.1:8000 in host_permissions"
     print(f"  -> Passed host_permissions audit: {host_permissions}")
 
-    # 4. Strict absence of intrusive capabilities
+    # 4. Strict absence of intrusive capabilities (only stealth_shield.js permitted in content_scripts)
     assert "web_accessible_resources" not in manifest, "STRICT VIOLATION: web_accessible_resources must NOT be declared!"
-    assert "content_scripts" not in manifest, "STRICT VIOLATION: persistent content_scripts must NOT be declared!"
-    print("  -> Passed strict exclusion: zero web_accessible_resources, zero persistent content_scripts")
+    cs = manifest.get("content_scripts", [])
+    if cs:
+        assert len(cs) == 1 and cs[0].get("js") == ["stealth_shield.js"] and cs[0].get("world") == "MAIN", "Only stealth_shield.js permitted in content_scripts"
+    print("  -> Passed strict exclusion: zero web_accessible_resources, stealth_shield.js audit verified")
 
     # 5. Side panel & background configuration
     side_panel = manifest.get("side_panel", {})

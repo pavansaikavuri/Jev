@@ -23,9 +23,9 @@
   "fallback": {
     "provider": "openrouter",
     "family": "nemotron",
-    "model": "nvidia/nemotron-3-super-120b-a12b:free",
+    "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
     "tier": "S",
-    "priority": 2
+    "priority": 1
   },
   "hedged_fallback_concurrency": 2,
   "fallback_pool": [
@@ -73,11 +73,18 @@
     }
   ],
   "timeouts_ms": {
-    "groq_parallel_timeout_ms": 2000,
-    "openrouter_fallback_timeout_ms": 2200,
+    "groq_parallel_timeout_ms": 4500,
+    "openrouter_fallback_timeout_ms": 4500,
     "searxng_timeout_ms": 650,
     "searxng_grounded_llm_timeout_ms": 900,
     "s_tier_soft_escalation_ms": 1300,
-    "hard_total_budget_ms": 4000
+    "hard_total_budget_ms": 8000,
+    "max_tokens": 1536
+  },
+  "code_timeouts_ms": {
+    "groq_parallel_timeout_ms": 6500,
+    "openrouter_fallback_timeout_ms": 7500,
+    "hard_total_budget_ms": 12000,
+    "max_tokens": 2048
   }
 }

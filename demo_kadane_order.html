@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QuizZy Drag-and-Drop Order Demo &amp; Audit</title>
+  <style>
+    :root {
+      --bg: #0F172A;
+      --card-bg: #1E293B;
+      --border: #334155;
+      --text: #F8FAFC;
+      --text-muted: #94A3B8;
+      --primary: #7C3AED;
+      --primary-hover: #6D28D9;
+      --accent: #38BDF8;
+      --success: #10B981;
+      --code-bg: #0F172A;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+    }
+    .topbar {
+      width: 100%;
+      max-width: 860px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 18px;
+      background: rgba(30, 41, 59, 0.7);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 20px;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+    .topbar .title { font-weight: 700; color: #E2E8F0; }
+    .topbar .score { font-weight: 700; color: var(--accent); }
+    .card {
+      width: 100%;
+      max-width: 860px;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 28px;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);
+    }
+    .q-header { margin-bottom: 16px; }
+    .q-statement { font-size: 17px; font-weight: 600; line-height: 1.5; color: #F1F5F9; }
+    .divider { border: 0; height: 1px; background: var(--border); margin: 16px 0; }
+    .subheader { font-size: 13.5px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 16px; }
+    .ordering-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-bottom: 24px;
+    }
+    .row-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: #0F172A;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 16px;
+      transition: all 150ms ease;
+      user-select: none;
+      cursor: grab;
+    }
+    .row-item:active { cursor: grabbing; }
+    .row-item.dragging {
+      opacity: 0.4;
+      border: 1px dashed var(--accent);
+      background: rgba(56, 189, 248, 0.05);
+    }
+    .row-item.drag-over {
+      border-color: var(--accent);
+      box-shadow: 0 0 10px rgba(56, 189, 248, 0.25);
+    }
+    .slot-number {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text-muted);
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+    .item-box {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex: 1;
+    }
+    .grip-handle {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #64748B;
+      cursor: grab;
+      flex-shrink: 0;
+    }
+    .grip-handle svg {
+      width: 16px;
+      height: 16px;
+      fill: currentColor;
+    }
+    .item-text {
+      font-size: 14.5px;
+      color: #E2E8F0;
+      line-height: 1.4;
+    }
+    code.code-pill {
+      background: rgba(148, 163, 184, 0.15);
+      color: #38BDF8;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 13px;
+    }
+    .buttons-container {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    button.btn {
+      padding: 10px 18px;
+      border-radius: 6px;
+      font-size: 13.5px;
+      font-weight: 600;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: all 120ms;
+    }
+    button.btn-show {
+      background: transparent;
+      border-color: #475569;
+      color: #CBD5E1;
+    }
+    button.btn-show:hover { background: rgba(255,255,255,0.05); }
+    button.btn-submit {
+      background: var(--primary);
+      color: #FFFFFF;
+    }
+    button.btn-submit:hover { background: var(--primary-hover); }
+    button.btn-skip {
+      background: transparent;
+      border-color: transparent;
+      color: #94A3B8;
+    }
+    button.btn-skip:hover { color: #E2E8F0; }
+
+    /* Control & Test Panel */
+    .test-panel {
+      width: 100%;
+      max-width: 860px;
+      background: #111827;
+      border: 1px solid #1F2937;
+      border-radius: 12px;
+      padding: 20px;
+      margin-top: 24px;
+    }
+    .test-panel h3 { font-size: 15px; font-weight: 700; color: #38BDF8; margin-bottom: 12px; }
+    .test-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+    .btn-action {
+      background: #374151;
+      color: #F9FAFB;
+      padding: 8px 14px;
+      border-radius: 6px;
+      border: 1px solid #4B5563;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-action:hover { background: #4B5563; }
+    .btn-action.primary { background: #0284C7; border-color: #0369A1; }
+    .btn-action.primary:hover { background: #0369A1; }
+    .btn-action.success { background: #059669; border-color: #047857; }
+    .btn-action.success:hover { background: #047857; }
+    .log-box {
+      background: #030712;
+      border: 1px solid #1F2937;
+      border-radius: 6px;
+      padding: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      color: #A7F3D0;
+      max-height: 240px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+    .status-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+      margin-left: 8px;
+    }
+    .badge-pass { background: rgba(16, 185, 129, 0.2); color: #34D399; border: 1px solid rgba(16, 185, 129, 0.4); }
+    .badge-warn { background: rgba(245, 158, 11, 0.2); color: #FBBF24; border: 1px solid rgba(245, 158, 11, 0.4); }
+  </style>
+</head>
+<body>
+
+  <!-- Top Bar identical to live CCBP practice layout -->
+  <div class="topbar sc-topbar sc-jTzLTM">
+    <span class="title sc-title">&larr; MCQ PRACTICE | LARGEST SUBARRAY SUM</span>
+    <span class="score sc-score">SCORE: 4</span>
+    <span class="attempted sc-attempted">QUESTIONS ATTEMPTED: 5/15</span>
+    <span class="instructions sc-instructions">PRACTICE INSTRUCTIONS</span>
+    <span class="end sc-end">END PRACTICE</span>
+  </div>
+
+  <!-- Question Card identical to live CCBP layout -->
+  <div class="card sc-card sc-bczRLJ" id="quiz-card-root">
+    <div class="q-header sc-q-header">
+      <p class="q-statement sc-statement">Rearrange the following steps of Kadane's Algorithm in the correct order:</p>
+    </div>
+    <hr class="divider sc-divider">
+    <p class="subheader sc-subheader">Drag and Drop to Order</p>
+
+    <!-- Draggable rows container -->
+    <div class="ordering-list sc-ordering-list sc-list-container" id="sortable-list">
+      <!-- Row 1 -->
+      <div class="row-item sc-row-item sc-gKclnd" draggable="true" data-id="row-1">
+        <span class="slot-number sc-slot-number sc-iBPRYJ">1</span>
+        <div class="item-box sc-item-box sc-fjdhpX" tabindex="0">
+          <div class="grip-handle sc-grip-handle" title="Drag handle">
+            <svg class="sc-svg-icon" viewBox="0 0 24 24"><path d="M9 5a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4zm6-16a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4z"/></svg>
+          </div>
+          <span class="item-text sc-text">Update <code class="code-pill sc-code-pill">maxSum</code> to be the maximum of <code class="code-pill sc-code-pill">maxSum</code> and <code class="code-pill sc-code-pill">curSum</code> .</span>
+        </div>
+      </div>
+      <!-- Row 2 -->
+      <div class="row-item sc-row-item sc-gKclnd" draggable="true" data-id="row-2">
+        <span class="slot-number sc-slot-number sc-iBPRYJ">2</span>
+        <div class="item-box sc-item-box sc-fjdhpX" tabindex="0">
+          <div class="grip-handle sc-grip-handle" title="Drag handle">
+            <svg class="sc-svg-icon" viewBox="0 0 24 24"><path d="M9 5a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4zm6-16a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4z"/></svg>
+          </div>
+          <span class="item-text sc-text">Initialize <code class="code-pill sc-code-pill">curSum</code> to <code class="code-pill sc-code-pill">0</code> and <code class="code-pill sc-code-pill">maxSum</code> to negative infinity.</span>
+        </div>
+      </div>
+      <!-- Row 3 -->
+      <div class="row-item sc-row-item sc-gKclnd" draggable="true" data-id="row-3">
+        <span class="slot-number sc-slot-number sc-iBPRYJ">3</span>
+        <div class="item-box sc-item-box sc-fjdhpX" tabindex="0">
+          <div class="grip-handle sc-grip-handle" title="Drag handle">
+            <svg class="sc-svg-icon" viewBox="0 0 24 24"><path d="M9 5a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4zm6-16a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4z"/></svg>
+          </div>
+          <span class="item-text sc-text">If <code class="code-pill sc-code-pill">curSum</code> becomes negative, reset it to <code class="code-pill sc-code-pill">0</code> .</span>
+        </div>
+      </div>
+      <!-- Row 4 -->
+      <div class="row-item sc-row-item sc-gKclnd" draggable="true" data-id="row-4">
+        <span class="slot-number sc-slot-number sc-iBPRYJ">4</span>
+        <div class="item-box sc-item-box sc-fjdhpX" tabindex="0">
+          <div class="grip-handle sc-grip-handle" title="Drag handle">
+            <svg class="sc-svg-icon" viewBox="0 0 24 24"><path d="M9 5a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4zm6-16a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4z"/></svg>
+          </div>
+          <span class="item-text sc-text">Iterate through each element of the array, adding the current element to <code class="code-pill sc-code-pill">curSum</code> .</span>
+        </div>
+      </div>
+      <!-- Row 5 -->
+      <div class="row-item sc-row-item sc-gKclnd" draggable="true" data-id="row-5">
+        <span class="slot-number sc-slot-number sc-iBPRYJ">5</span>
+        <div class="item-box sc-item-box sc-fjdhpX" tabindex="0">
+          <div class="grip-handle sc-grip-handle" title="Drag handle">
+            <svg class="sc-svg-icon" viewBox="0 0 24 24"><path d="M9 5a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4zm6-16a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4z"/></svg>
+          </div>
+          <span class="item-text sc-text">Return <code class="code-pill sc-code-pill">maxSum</code> .</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Buttons -->
+    <div class="buttons-container sc-buttons-container">
+      <button class="btn btn-show sc-btn-show" id="btn-show">SHOW ANSWER</button>
+      <button class="btn btn-submit sc-btn-submit" id="btn-submit">SUBMIT</button>
+      <button class="btn btn-skip sc-btn-skip" id="btn-skip">SKIP</button>
+    </div>
+  </div>
+
+  <!-- Interactive Test & Audit Dashboard -->
+  <div class="test-panel">
+    <h3>QuizZy Automated Test &amp; Audit Panel</h3>
+    <div class="test-actions">
+      <button class="btn-action primary" id="btn-audit-extract">1. Audit Extractor</button>
+      <button class="btn-action primary" id="btn-audit-solve">2. Query Backend /solve</button>
+      <button class="btn-action success" id="btn-audit-apply">3. Apply Order via Executor</button>
+      <button class="btn-action warning" id="btn-audit-skip">4. Test Skip Button</button>
+      <button class="btn-action" id="btn-load-kadane">Reload Kadane</button>
+      <button class="btn-action" id="btn-load-subarray">Sample: Q7 Subarray Sum (MCQ)</button>
+      <button class="btn-action" id="btn-load-binary">Sample: Binary Search</button>
+      <button class="btn-action" id="btn-load-sdlc">Sample: SDLC Lifecycle</button>
+      <button class="btn-action" id="btn-clear-log">Clear Log</button>
+    </div>
+    <div class="log-box" id="log-output">// QuizZy audit ready. Click "1. Audit Extractor" or "2. Query Backend /solve" to test...</div>
+  </div>
+
+  <!-- Load Extractor and Executor directly -->
+  <script src="extension/extractor.js"></script>
+  <script src="extension/executor.js"></script>
+
+  <script>
+    const logBox = document.getElementById("log-output");
+    function log(msg) {
+      logBox.textContent += "\n" + msg;
+      logBox.scrollTop = logBox.scrollHeight;
+    }
+
+    // Set up interactive HTML5 Drag & Drop handlers for the list
+    function setupDragAndDrop() {
+      const list = document.getElementById("sortable-list");
+      let draggedItem = null;
+
+      list.querySelectorAll(".row-item").forEach(item => {
+        item.addEventListener("dragstart", (e) => {
+          draggedItem = item;
+          setTimeout(() => item.classList.add("dragging"), 0);
+          e.dataTransfer.effectAllowed = "move";
+        });
+
+        item.addEventListener("dragend", () => {
+          setTimeout(() => {
+            if (draggedItem) draggedItem.classList.remove("dragging");
+            draggedItem = null;
+          }, 0);
+          updateSlotNumbers();
+        });
+
+        item.addEventListener("dragover", (e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          item.classList.add("drag-over");
+        });
+
+        item.addEventListener("dragleave", () => {
+          item.classList.remove("drag-over");
+        });
+
+        item.addEventListener("drop", (e) => {
+          e.preventDefault();
+          item.classList.remove("drag-over");
+          if (draggedItem && draggedItem !== item) {
+            const allItems = Array.from(list.children);
+            const droppedIdx = allItems.indexOf(item);
+            const draggedIdx = allItems.indexOf(draggedItem);
+            if (draggedIdx < droppedIdx) {
+              list.insertBefore(draggedItem, item.nextSibling);
+            } else {
+              list.insertBefore(draggedItem, item);
+            }
+            updateSlotNumbers();
+            log("[Demo UI] Dragged item from position " + (draggedIdx + 1) + " -> " + (droppedIdx + 1));
+          }
+        });
+      });
+    }
+
+    function updateSlotNumbers() {
+      const list = document.getElementById("sortable-list");
+      list.querySelectorAll(".row-item").forEach((item, idx) => {
+        const slot = item.querySelector(".slot-number");
+        if (slot) slot.textContent = String(idx + 1);
+      });
+    }
+
+    setupDragAndDrop();
+
+    let lastExtracted = null;
+    let lastSolution = null;
+
+    // 1. Audit Extractor
+    document.getElementById("btn-audit-extract").addEventListener("click", () => {
+      log("\n[AUDIT] Running Extractor on current DOM...");
+      const extractor = window.QuizZyExtractor || window.__QuizZyExtractor;
+      if (!extractor) {
+        log("ERROR: QuizZyExtractor not loaded!");
+        return;
+      }
+      const result = extractor.extractQuizFromDom(document);
+      lastExtracted = result;
+      log("Extraction Result: success=" + result.success + ", q_type=" + result.q_type);
+      log("Question: " + result.question);
+      log("Extracted Options (" + (result.options ? result.options.length : 0) + "):");
+      if (result.options) {
+        result.options.forEach((opt, idx) => {
+          log("  [" + String.fromCharCode(65 + idx) + "] " + opt);
+        });
+      }
+      log("Option Selectors: " + JSON.stringify(result.optionSelectors));
+      log("Drag Handle Selectors: " + JSON.stringify(result.dragHandleSelectors));
+    });
+
+    // 2. Query Backend /solve
+    document.getElementById("btn-audit-solve").addEventListener("click", async () => {
+      const extractor = window.QuizZyExtractor || window.__QuizZyExtractor;
+      const extracted = extractor ? extractor.extractQuizFromDom(document) : lastExtracted;
+      if (!extracted || !extracted.success) {
+        log("ERROR: Please run '1. Audit Extractor' first or check question layout.");
+        return;
+      }
+      log("\n[BACKEND] Sending /solve request to http://127.0.0.1:8000/solve...");
+      try {
+        const res = await fetch("http://127.0.0.1:8000/solve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            subject: extracted.subject || "Algorithm",
+            q_type: extracted.q_type || "order",
+            question: extracted.question,
+            options: extracted.options,
+            bypass_cache: true
+          })
+        });
+        const data = await res.json();
+        lastSolution = data;
+        log("Backend Response: status=" + data.status + ", confidence=" + data.confidence_tier);
+        log("Derived Answer Order: " + data.answer);
+        log("Permutation Indices: " + JSON.stringify(data.permutation_indices));
+        log("Reasoning: " + data.reason);
+      } catch (err) {
+        log("Backend Request Failed: " + err.message);
+      }
+    });
+
+    // 3. Apply Order via Executor
+    document.getElementById("btn-audit-apply").addEventListener("click", async () => {
+      const executor = window.QuizZyExecutor || window.__QuizZyExecutor;
+      if (!executor) {
+        log("ERROR: QuizZyExecutor not loaded!");
+        return;
+      }
+      if (!lastSolution || !lastSolution.permutation_indices) {
+        log("ERROR: No solution available. Run '2. Query Backend /solve' first.");
+        return;
+      }
+      log("\n[EXECUTOR] Applying solution permutation: " + JSON.stringify(lastSolution.permutation_indices));
+      const payload = {
+        q_type: "order",
+        question_type: "order",
+        answer: lastSolution.answer,
+        permutation_indices: lastSolution.permutation_indices,
+        ordered_indices: lastSolution.ordered_indices,
+        ordered_texts: lastSolution.ordered_texts,
+        options: lastExtracted ? lastExtracted.options : [],
+        optionSelectors: lastExtracted ? lastExtracted.optionSelectors : []
+      };
+
+      try {
+        const actionRes = await executor.executeAction(payload);
+        log("Executor Result: ok=" + actionRes.ok + ", verified_order=" + actionRes.verified_order + ", action=" + actionRes.action);
+        updateSlotNumbers();
+      } catch (err) {
+        log("Executor Execution Failed: " + err.message);
+      }
+    });
+
+    // Sample question loaders
+    function setQuestionContent(title, statement, items) {
+      document.querySelector(".topbar .title").textContent = "← MCQ PRACTICE | " + title.toUpperCase();
+      document.querySelector(".q-statement").textContent = statement;
+      const list = document.getElementById("sortable-list");
+      list.innerHTML = "";
+      items.forEach((itemHtml, idx) => {
+        const row = document.createElement("div");
+        row.className = "row-item sc-row-item sc-gKclnd";
+        row.draggable = true;
+        row.dataset.id = "row-" + (idx + 1);
+        row.innerHTML = `
+          <span class="slot-number sc-slot-number sc-iBPRYJ">${idx + 1}</span>
+          <div class="item-box sc-item-box sc-fjdhpX" tabindex="0">
+            <div class="grip-handle sc-grip-handle" title="Drag handle">
+              <svg class="sc-svg-icon" viewBox="0 0 24 24"><path d="M9 5a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4zm6-16a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4z"/></svg>
+            </div>
+            <span class="item-text sc-text">${itemHtml}</span>
+          </div>
+        `;
+        list.appendChild(row);
+      });
+      setupDragAndDrop();
+      log("\n[LOADED] " + title + " (" + items.length + " options)");
+    }
+
+    document.getElementById("btn-load-kadane").addEventListener("click", () => {
+      setQuestionContent(
+        "LARGEST SUBARRAY SUM",
+        "Rearrange the following steps of Kadane's Algorithm in the correct order:",
+        [
+          `Update <code class="code-pill sc-code-pill">maxSum</code> to be the maximum of <code class="code-pill sc-code-pill">maxSum</code> and <code class="code-pill sc-code-pill">curSum</code> .`,
+          `Initialize <code class="code-pill sc-code-pill">curSum</code> to <code class="code-pill sc-code-pill">0</code> and <code class="code-pill sc-code-pill">maxSum</code> to negative infinity.`,
+          `If <code class="code-pill sc-code-pill">curSum</code> becomes negative, reset it to <code class="code-pill sc-code-pill">0</code> .`,
+          `Iterate through each element of the array, adding the current element to <code class="code-pill sc-code-pill">curSum</code> .`,
+          `Return <code class="code-pill sc-code-pill">maxSum</code> .`
+        ]
+      );
+    });
+
+    document.getElementById("btn-load-binary").addEventListener("click", () => {
+      setQuestionContent(
+        "BINARY SEARCH ALGORITHM",
+        "Arrange the steps of Binary Search in the correct sequential order from first to last:",
+        [
+          `If target equals <code class="code-pill sc-code-pill">arr[mid]</code>, return <code class="code-pill sc-code-pill">mid</code>.`,
+          `Initialize <code class="code-pill sc-code-pill">low = 0</code> and <code class="code-pill sc-code-pill">high = n - 1</code>.`,
+          `If <code class="code-pill sc-code-pill">low &gt; high</code>, element is not present; return <code class="code-pill sc-code-pill">-1</code>.`,
+          `Calculate <code class="code-pill sc-code-pill">mid = low + (high - low) / 2</code>.`,
+          `If target &lt; <code class="code-pill sc-code-pill">arr[mid]</code>, set <code class="code-pill sc-code-pill">high = mid - 1</code>; otherwise set <code class="code-pill sc-code-pill">low = mid + 1</code>.`
+        ]
+      );
+    });
+
+    document.getElementById("btn-load-sdlc").addEventListener("click", () => {
+      setQuestionContent(
+        "SOFTWARE ENGINEERING",
+        "Arrange the stages of the Software Development Life Cycle (SDLC) in chronological order:",
+        [
+          "Implementation & Coding",
+          "Requirements Gathering & Analysis",
+          "Operations & Maintenance",
+          "Architecture & System Design",
+          "Integration & Quality Assurance Testing"
+        ]
+      );
+    });
+
+    document.getElementById("btn-load-subarray").addEventListener("click", () => {
+      document.querySelector(".topbar .title").textContent = "← MCQ PRACTICE | LARGEST SUBARRAY SUM";
+      document.querySelector(".q-statement").innerHTML = 'Given an array <code class="code-pill sc-code-pill">arr</code> = <code class="code-pill sc-code-pill">[2, -1, 2, 3, -9]</code> , what is the largest sum of a subarray?';
+      const list = document.getElementById("sortable-list");
+      list.innerHTML = "";
+      const mcqOptions = ["5", "6", "4", "3"];
+      mcqOptions.forEach((opt, idx) => {
+        const row = document.createElement("div");
+        row.className = "row-item sc-row-item sc-option radio-item";
+        row.style.cursor = "pointer";
+        row.innerHTML = `
+          <div class="item-box sc-item-box" style="padding: 10px 14px; display: flex; align-items: center; gap: 12px; width: 100%;">
+            <input type="radio" name="demo-mcq" value="${idx}" style="cursor: pointer; width: 18px; height: 18px; accent-color: var(--primary);">
+            <span class="item-text sc-text" style="font-size: 16px; font-weight: 500;">${opt}</span>
+          </div>
+        `;
+        row.addEventListener("click", () => {
+          row.querySelector("input").checked = true;
+        });
+        list.appendChild(row);
+      });
+      log("\n[LOADED] Question 7/15: Subarray Sum MCQ (options: 5, 6, 4, 3)");
+    });
+
+    document.getElementById("btn-audit-skip").addEventListener("click", async () => {
+      const executor = window.QuizZyExecutor || window.__QuizZyExecutor;
+      if (!executor || typeof executor.clickSkipButton !== "function") {
+        log("ERROR: QuizZyExecutor.clickSkipButton not loaded!");
+        return;
+      }
+      log("\n[EXECUTOR] Calling clickSkipButton()...");
+      const res = await executor.clickSkipButton();
+      log("Skip Result: " + JSON.stringify(res));
+    });
+
+    document.getElementById("btn-clear-log").addEventListener("click", () => {
+      logBox.textContent = "// Log cleared.";
+    });
+  </script>
+</body>
+</html>

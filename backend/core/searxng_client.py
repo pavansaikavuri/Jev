@@ -67,15 +67,20 @@ def is_factual_question(subject: str, q_type: str, question: str, options: List[
         if any(op in q_lower for op in ["+", "-", "*", "/", "=", "^", "sqrt", "cos(", "sin(", "tan("]):
             return False
 
-    # 2. Code tracing / programming syntax check
+    # 2. Code tracing / programming syntax / complexity check
     code_patterns = [
+        r"reference\s*code\s*:",
         r"\bdef\s+\w+\s*\(",
         r"\bfunction\s*\w*\s*\(",
         r"\bconsole\.log\(",
         r"\bprint\s*\(",
         r"\bfor\s*\(\s*(var|let|int)\s+",
+        r"\bfor\s+\w+\s+in\s+range\b",
         r"\bwhat\s+(is\s+the\s+)?output\s+of\s+(this\s+)?code\b",
         r"\boutput\s+of\s+the\s+following\s+code\b",
+        r"\btime\s+complexity\b",
+        r"\bspace\s+complexity\b",
+        r"\bo\s*\(\s*[nN0-9]",
         r"```[a-z]*",
     ]
     for pattern in code_patterns:

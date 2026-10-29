@@ -362,9 +362,183 @@ During development, verification, and regression audits, several subtle bugs wer
    - Run the automated weekly benchmark against `questions.csv` to establish the latest accuracy and p95 latency baseline across active Groq and OpenRouter free-tier models.
 3. **SearXNG Local Container Integration:**
    - Provide an optional `docker-compose.yml` for local SearXNG deployment to enable factual search grounding without external dependencies.
-4. **Enhanced Ordering Drag Physics:**
-   - Further optimize HTML5 DragEvent simulation for custom non-standard UI libraries that do not conform to native HTML5 drag-and-drop standards.
+---
+
+## 9. Phase 9 Hardening: Three Core Question Models (100% Zero-Error Target)
+
+Implemented and strictly verified across live `learning.ccbp.in` question models (October 2026):
+
+### 9.1 Model 1: Drag-and-Sequence Questions ("Drag and Drop to Order")
+- **Order Requirement:** Sequence must follow the exact chronological/logical order stated in the problem (e.g. Linear Probing collision resolution: `1. Check if the calculated index is already occupied` -> `2. If occupied, move to the next slot (index + 1)` -> `3. Repeat until an empty slot is found`).
+- **DOM & Drag Simulation (`extension/executor.js`):**
+  - Handles `react-beautiful-dnd` drag handles (`[data-rbd-drag-handle-draggable-id]`, `::` handles) via keyboard accessibility sequences (`Space` to lift, `ArrowDown`/`ArrowUp` steps, `Space` to drop).
+  - Simulates coordinate-based pointer/mouse movements and native HTML5 DragEvents (`dragstart`, `dragenter`, `dragover`, `drop`, `dragend`).
+  - **Mandatory Pre-Submit Order Verification:** Compares post-drag DOM item order against `ordered_texts`. Returns `ok: false, error: 'ORDER_VERIFICATION_FAILED'` if elements fail to reorder, completely blocking incorrect automatic submissions.
+
+### 9.2 Model 2: Multiple-Choice Questions with Several Correct Answers (Square Checkboxes)
+- **Check-Square Requirement:** Square option indicators (`[role='checkbox']`, `input[type='checkbox']`, square indicator elements).
+- **Multi-Select Normalizer & Solver (`backend/core/normalizer.py`, `backend/schemas.py`, `backend/cache.py`):**
+  - Added native `q_type: "multi"` support with `canonical_keys` (e.g. `["A", "D"]`), `selected_indices` (e.g. `[0, 3]`), and `selected_texts` (e.g. `["Uses a second hash function", "Reduces clustering"]`).
+  - Strict independent True/False evaluation for all options to avoid single-option truncation errors.
+  - Zero-error grading rejects partial matches (`grade_answer` returns `False` if only one of multiple correct options is selected).
+- **Execution & Pre-Submit State Gate (`extension/executor.js`):**
+  - `isOptionChecked`: evaluates native inputs, ARIA attributes (`aria-checked="true"`), checkmark SVG icons, and class state.
+  - `executeMultiMcqAction`: toggles every target option on, toggles non-target options off, and verifies every option state matches target before returning `ok: true`.
+
+### 9.3 Model 3: Fill-in-the-Box Questions (Numerical / Text Inputs)
+- **Input Targeting (`extension/extractor.js`, `extension/executor.js`):**
+  - Prioritizes question-specific input textareas/inputs with placeholders such as `Enter your answer` or `answer`.
+  - Dispatches full React native property descriptor setter and `input` / `change` events.
+  - **Pre-Submit Input Verification:** Confirms `inputEl.value === expected` before returning `ok: true`.
+  - Deterministic mathematical calculation rules added to system prompt (e.g. multiplication hashing $h(123) = \lfloor 10 \cdot (123 \cdot 0.618 \bmod 1) \rfloor = 0$).
+
+### 9.4 Floating HUD Stale State Elimination (`extension/floating_hud.js`)
+- Added `resetSolutionDisplay()` triggered upon:
+  1. Next / Advance button click.
+  2. Question signature transition during Auto Mode.
+  3. Start of solve extraction.
+- Prevents previous question's badges (e.g. `[D]`) or reasoning from persisting across question transitions.
+- Added dynamic multi-select badge `[A, D]` and ordered sequence arrow display `➔`.
+
+### 9.5 Verification Results
+- `tests/test_three_question_models.py`: 8/8 unit and integration tests passing.
+- Full pytest test suite (`tests/`): 57/57 tests passing in 24.5s with zero regressions.
+- Offline deterministic self-test (`eval/run_eval.py --self-test`): 8/8 tests passing (100% success).
+- Live server on `http://127.0.0.1:8000/solve`: verified all 3 models returning 100% accurate responses.
+
+---
+
+## 10. Phase 7 Final Completion: End-to-End Coding Solve, Deep Problem Reasoning & Forensic Self-Healing Engine
+
+### 10.1 Deep Problem Reasoning & Forensic Self-Healing Prompts (`backend/core/prompts.py`)
+- **Mode 1 (First Attempt):** Formulates step-by-step problem analysis, algorithm/data structure justification, and concrete example walkthrough inside the `reason` field. Requires explicit handling of critical edge cases (`head == NULL`, `head->next == NULL`, empty inputs, all-negative values, 0-based vs 1-based indexing, 64-bit integer overflow). Preserves exact starter signatures in `answer` without duplicating driver headers or platform declarations.
+- **Mode 2 (Second Attempt Forensic Repair):** Automatically activates when `error_context` is supplied. Injects Attempt 1's code and compiler stderr / runtime traceback / failed testcase diagnostics. Requires an explicit 3-step root-cause diagnosis in `reason` before emitting complete, repaired source code in `answer`, strictly forbidding repeating Attempt 1's broken implementation.
+- **Contract & Guardrails:** Enforces `CODING_SYSTEM_PROMPT` with `/no_think` enforcement, stripping `<think>` tags and guaranteeing single valid JSON output.
+
+### 10.2 Backend Cache Bypass & Cache Self-Healing (`backend/app.py`, `backend/cache.py`, `backend/schemas.py`)
+- **Automatic Cache Bypass on Retry:** `/solve` detects `request.bypass_cache or bool(request.error_context)` and bypasses `solve_cache` on read, ensuring Attempt 1's failed code is never re-served on Attempt 2.
+- **Cache Self-Healing on Verified Retry:** When Attempt 2 reaches consensus (`HIGH_BOTH_AGREE` or `MEDIUM_TIEBREAKER_AGREE`), `solve_cache` is updated via `INSERT OR REPLACE`, healing the cache entry for that problem.
+- **Zero-Poison Invariant:** Unverified, uncertain, or failing responses are strictly forbidden from being written to the cache.
+- **Token & Timeout Headroom:** Verified `max_tokens: 2048` and sufficient timeout headroom for code generation in `models.json` and `backend/core/llm_client.py`.
+
+### 10.3 Language, Problem & Unfolded Starter Code Extraction (`extension/extractor.js`)
+- **`detectCodingLanguage(docRef, starterCodeHint)`:** Multi-tier language detection resolving `cpp`, `python`, `java`, or `javascript` from DOM selectors (`select`, `combobox`, toolbar buttons), Monaco/Ace editor mode IDs, and syntax signatures (`#include`, `def `, `public class`, `function`).
+- **`extractCodingProblem(docRef)`:** Non-mutating extractor capturing problem title, description, constraints, and sample testcases (`Input`, `Output`, `Explanation`), differentiating Coding Playground from split-pane MCQs.
+- **Unfolded Starter Code:** Extracts folded comment structures (`/* struct Node ... */`) and function signatures directly from Ace/Monaco editor sessions.
+
+### 10.4 Compiler/Testcase Drawer Parser & DOM Epoch Synchronization (`extension/executor.js`)
+- **`capturePreRunSignature(docRef)`:** Captures snapshot of output console text and child count prior to clicking Run.
+- **`triggerRunButton(btn)`:** Full pointer and mouse event dispatch sequence (`pointerover`, `mouseover`, `pointerdown`, `mousedown`, `focus`, `pointerup`, `mouseup`, `click`) with safe single fallback click.
+- **`pollOutputConsole(timeoutMs, docRef, preRunSignature)`:** Epoch-synchronized polling that ignores stale Attempt 1 error DOM nodes until in-flight compiling or text mutation occurs.
+- **`extractCodingExecutionResult(docRef, attemptCode)`:** Structured extraction of `PASSED`, `COMPILATION_ERROR` (line references and stderr), `RUNTIME_ERROR` (exception and traceback), and `WRONG_ANSWER` (`Input`, `Your Output`, `Expected Output`), assembling structured `error_context`.
+
+### 10.5 Unified End-to-End Solve Workflow & Bounded Self-Healing Loop (`extension/background.js`, `extension/executor.js`, `extension/sidepanel.js`)
+- **Unified Solve Orchestration:** Clicking **Solve** or pressing `Alt+S` in Coding Mode executes the complete lifecycle:
+  `IDLE → IDENTIFYING → EXTRACTING → GENERATING → WRITING → RUNNING → VERIFYING → (RETRYING → GENERATING → WRITING → RUNNING → VERIFYING) → COMPLETED/FAILED`.
+- **Bounded Retry (`max_retries = 1`):** Terminates cleanly as `FAILED` if Attempt 2 fails, preventing infinite loops.
+- **Strict Production Guardrail:** `isAuthorizedTestEnvironment()` returns `false` on `learning.ccbp.in`, ensuring `verified_no_submit_production_guardrail` and disabling automated submission on live assessment portals.
+- **Concurrency Mutex:** `isCodingAutomationRunning` prevents duplicate triggers and is guaranteed to release in a `finally` block.
+
+### 10.6 Phase 7 Comprehensive Verification Results
+- **Full Pytest Test Suite (`tests/`):** **105/105 tests passing (100%)** across 17 test modules in 59s.
+- **Self-Healing Complete Suite (`tests/test_phase7_self_healing_complete.py`):** **6/6 tests passing (100%)**.
+- **Coding Automation Engine Suite (`tests/test_phase7_coding_automation_engine.py`):** **8/8 tests passing (100%)**.
+- **Coding Benchmark Problems (`tests/test_phase7_coding_mode.py`):** **15/15 problems passing (100%)**.
+- **Offline Deterministic Self-Test (`eval/run_eval.py --self-test`):** **8/8 tests passing (100%)**.
+- **Live Model Catalog & Connectivity (`eval/run_eval.py --check-models`):** All Groq and OpenRouter models verified.
+- **Realistic CCBP Coding Benchmark (`eval/run_eval.py --coding-benchmark`):** **15/15 problems passing (100%)**.
+
+### 10.7 Letter-by-Letter Human Typing Engine Hotfix (Paste-Blocked CCBP Portal)
+- **Problem Statement:** On `learning.ccbp.in`, paste events (`Ctrl+V`, right-click paste, or `ClipboardEvent('paste')`) are strictly blocked by the portal's security policies. Moreover, setting `.value` on Monaco's hidden `<textarea class="inputarea">` does not update Monaco's internal model or React state, causing the runner to compile unmodified starter code (`//Write Your Code Here...`), resulting in `Time Limit Exceeded`.
+- **Root-Cause Analysis:**
+  1. `autoCompileAndSubmitLoop` was executed in the Chrome Extension `ISOLATED` world where `window.monaco` was not directly accessible, falling back to writing to the hidden textarea which Monaco ignored.
+  2. `writeCodeWithHumanTypingInMainWorld` was calling `setValue()` which acted as a bulk replacement rather than real keystrokes, missing `keydown`, `keypress`, `beforeinput`, and `keyup` event sequences.
+- **Architectural Solution:**
+  1. **Background Step 3b MAIN-World Bridge:** In `extension/background.js`, Step 3b now explicitly executes `writeCodeWithHumanTypingInMainWorld` in `world: "MAIN"` via `chrome.scripting.executeScript` immediately after obtaining the solution and before entering the compilation loop.
+  2. **True Letter-by-Letter Typing Engine:**
+     - Disables auto-closing brackets (`autoClosingBrackets: "never"`) and auto-indent in Monaco and Ace to prevent duplicate brackets (`{{}}`) or mangled indentation.
+     - Clears the buffer cleanly via `monacoEditorInstance.executeEdits("type-clear", ...)` or `setValue("")`.
+     - Types every single character sequentially:
+       - Monaco: `monacoEditorInstance.trigger("keyboard", "type", { text: ch })` for each letter.
+       - Ace: `aceInstance.onTextInput(ch)` or `aceInstance.insert(ch)` for each letter.
+       - Textarea / inputarea: Dispatches `keydown`, `keypress`, `document.execCommand("insertText", false, ch)` / `InputEvent("input", { inputType: "insertText", data: ch })`, and `keyup` for each character.
+       - Dispatches zero `paste` events and zero clipboard events.
+     - Verifies final buffer, performs atomic reconciliation if needed, and calls React Fiber's `onChange`.
+  3. **Executor MAIN-World Bridge on Retries (`writeCodeToMainWorld`):** Added `writeCodeToMainWorld` helper in `extension/executor.js` that dispatches `WRITE_CODE_EDITOR_MAIN` to the background worker to ensure Attempt 2 self-healing retries are also typed letter-by-letter in the MAIN world.
+- **Verification:** All 105 pytest tests passing in 63.6s, with 100% pass rates on `test_3_paste_blocked_ace_and_monaco_human_typing_engine` and `test_4_compile_and_run_self_healing_retry_and_submit_loop`.
+
+### 10.8 Critical Hotfix: Non-Paste MAIN-World Code Writer, React Fiber Discovery & Pre-Run Verification Gate
+- **Problem Statement:** In coding mode on platforms like `learning.ccbp.in/question/*`, QuizZy was clicking **Run** without writing the generated code into the editor, causing `Time Limit Exceeded` or compilation errors on unmodified starter code.
+- **Root Causes Eliminated:**
+  1. **Isolated World vs. MAIN World Execution Mismatch:** Content scripts running in the `ISOLATED` world lacked direct access to `window.ace`, `window.monaco`, `aceEl.env.editor`, and React Fiber tree.
+  2. **Hidden Keystroke-Catcher `<textarea>` False Positive:** When global editor objects were absent in the isolated world, fallbacks matched `.ace_text-input` or `textarea.monaco-mouse-cursor-text` and mutated `.value`, which does not update the underlying Ace `EditSession` or Monaco `ITextModel`, while falsely returning `{ success: true }`.
+  3. **Missing Post-Write Read-Back Verification Gate:** The loop transitioned immediately from `WRITING` to `RUNNING` without verifying that the editor's live buffer actually changed.
+  4. **Webpack-Bundled React Editors & Blocked Paste Events:** `learning.ccbp.in` blocks `paste` events and wraps Monaco/Ace inside React components where React state (`onChange`) must be synchronized via non-paste operations (`executeEdits("keyboard", ...)` / `session.doc.setValue`).
+  5. **Pre-Write Code Payload Ordering:** `TRIGGER_CODING_AUTO_LOOP` was previously entered without waiting for or verifying a valid non-empty code payload.
+- **Surgical Implementations:**
+  1. **Multi-Layer Non-Paste Editor Discovery & Writing Engine (`discoverMainWorldEditor`):**
+     - Monaco: `win.monaco.editor.getEditors()`, `win.monaco.editor.getModels()`, DOM expandos, and deep React Fiber traversal (up to 16 hops on `__reactFiber$` / `__reactInternalInstance$` / `__reactProps$`) finding `executeEdits`, `getModel`, `setValue`, `pushEditOperations`, and `onChange`.
+     - Ace: `aceEl.env.editor`, `aceEl.editor`, `aceEl.__ace_editor__`, `win.ace.edit(aceEl)`, and deep React Fiber scan finding `session`, `getValue`, `setValue`, and `onChange`.
+     - CodeMirror 5 (`getValue`/`setValue`) & CodeMirror 6 (`view.state.doc.toString()` / `view.dispatch()`).
+     - **Requirement B Hard Rule:** If `.ace_editor`, `.monaco-editor`, `.CodeMirror`, or `.cm-editor` is in DOM, strictly refuses to mutate internal hidden focus textareas (`.ace_text-input`, `textarea.inputarea`) and returns `{ success: false, error: "Editor container found but MAIN-world editor instance was not accessible" }`.
+  2. **Service Worker MAIN-World Routing:**
+     - Content scripts dispatch `WRITE_CODE_EDITOR_MAIN` and `READ_CODE_EDITOR_MAIN` via `chrome.runtime.sendMessage` to `extension/background.js`, which executes them in `world: "MAIN"` via `chrome.scripting.executeScript`.
+  3. **Pre-Run Read-Back Verification Gate (Requirement D):**
+     - QuizZy strictly verifies that `writtenResult.success === true`, `readBackBuffer.length > 0`, buffer is not identical to untouched starter stub, and contains key code lines/tokens before clicking Run.
+     - Retries once with alternative mutation if unverified. If still unverified, sets state to `FAILED`, aborts immediately with `write_verification_failed`, and guarantees `runClickCount === 0`.
+  4. **End-to-End Solve Trigger Integrity & Code Pre-Resolution:**
+     - `TRIGGER_CODING_AUTO_LOOP` and `TRIGGER_SOLVE` pre-resolve code from payload, storage, or backend `/solve`, strip markdown fences, write Attempt 1 to MAIN world, and execute the loop with self-healing retry callback.
+- **Verification Suite:**
+  - **Full Pytest Suite:** **110/110 passing (100%)** in 61s across all 18 test modules (including new tests 9-13 in `tests/test_phase7_coding_automation_engine.py`).
+  - **All 15 Coding Benchmark Problems:** **15/15 passing (100%)** via `test_5_all_15_coding_benchmark_problems_end_to_end`.
+  - **Offline Deterministic Self-Test:** **100% passing** via `eval/run_eval.py --self-test`.
+  - **Realistic CCBP Coding Benchmark:** **15/15 passing (100%)** via `eval/run_eval.py --coding-benchmark`.
+
+### 10.9 CCBP Monaco React Hook `useRef` Discovery, Boilerplate Preservation & Pre-Run Gate
+- **Observed CCBP Bug:** On `learning.ccbp.in/question/4aac171a-80f5-4b42-a5db-bd0a8d1318ce` ("Verify if a Linked List Forms a Circle"), the starter stub contained `class Solution{ public: bool isCircular(Node* head) { //Write Your Code Here... } };`. QuizZy previously clicked Run on untouched code resulting in `Time Limit Exceeded`.
+- **Root Causes Fixed:**
+  1. **Monaco in React Hook `useRef`:** CCBP's `@monaco-editor/react` stores the Monaco editor in functional component hook chains (`hook.memoizedState.current`). Scanners looking directly at `memoizedState` missed it. Updated `scanReactFiber` and `discoverMainWorldEditor` with `checkCandidate(cand)` to unwrap `.current`, climb up ancestor elements (up to 15 hops) and fiber returns (up to 25 hops), scan RequireJS AMD modules (`require("vs/editor/editor.main")`), DOM expandos (`__monaco_editor__`, `editor`, `_editor`), and iframes.
+  2. **Class-Wrapping & Boilerplate Preservation:** When the solver returns a function body (e.g. `bool isCircular(Node* head) { ... }`) without an enclosing class, `writeCodeWithHumanTypingInMainWorld` automatically wraps the solution inside `class ${currentClassName} { public: ... };` and splices it cleanly from `classIdx`, preserving all preceding comments (`#include`, `/* class Node ... */`) and keeping the closing `};` intact without syntax errors.
+  3. **Strict Pre-Run Verification Gate (`verifyBufferContents`):**
+     - Immediate rejection if `/write\s+your\s+code\s+here/i.test(buf)`.
+     - Filters out lines from `starterStub` so boilerplate lines like `class Solution{` don't trigger false positives.
+     - Strictly requires solution-specific tokens in the editor before allowing `CLICK_RUN`.
+  4. **Sidepanel & HUD Wiring:**
+     - Connected `codingHudInstance` methods (`apply`, `next`, `startAuto`, `stopAuto`) in `extension/floating_hud.js` to dispatch `TRIGGER_APPLY` and `TRIGGER_CODING_AUTO_LOOP`.
+     - In `extension/sidepanel.js`, passed `language` and `starter_code` to `WRITE_CODE_EDITOR_MAIN` in `btnApplyCode` and `applySolutionAction`.
+- **Automated Verification:**
+  - Added Test 14 (React Fiber Hook `useRef` Editor Discovery), Test 15 (Post-Write Gate Rejection of Starter Placeholders), and Test 16 (Class-Wrapping Boilerplate Preservation) in `tests/test_phase7_coding_automation_engine.py`.
+  - **Full Pytest Suite:** **113/113 passing (100%)** in 61s.
+  - **CCBP Coding Benchmark:** **15/15 passing (100%)** in `eval/run_eval.py --coding-benchmark`.
+
+### 10.10 Split-Pane Multi-Monaco Target Isolation & Empty Payload Reject Guard
+- **Problem Statement (Observed Symptom on CCBP):**
+  On CCBP coding pages (`learning.ccbp.in/question/*`), multiple Monaco editor instances coexist:
+  1. An example output code snippet inside the left description pane (e.g. under "Example 1 Output:" in `.question-description`).
+  2. The main interactive workspace code editor inside the right-hand black container.
+  Previously, naive selectors (`doc.querySelector(".monaco-editor")`, `eds[0]`, or `models[0]`) targeted the first Monaco element found in DOM order, which happened to be the example output box on the left. Consequently, QuizZy wrote code (e.g. `#include <bits/stdc++.h>` or `import sys`) into the left description pane's read-only snippet box while leaving the actual right-hand coding editor completely blank, triggering CCBP's orange alert: *"Write some code before running."*
+- **Root Causes Eliminated:**
+  1. **DOM Order vs Workspace Editor Mismatch:** The example snippet in the description pane appears first in DOM order and in Monaco's `getModels()` list (`models[0]`).
+  2. **Snippet Read-Only Status:** The preview snippet has `readOnly: true`, whereas the interactive workspace editor has `readOnly: false`.
+  3. **Empty/Whitespace Payload Vulnerability:** If a payload had empty code, `!targetCode && targetCode !== ""` evaluated to `false`, allowing an empty string to wipe the editor.
+- **Surgical Implementations:**
+  1. **`findMainEditorElement(docRoot)` (`extension/background.js`, `extension/executor.js`):**
+     - Excludes elements inside `.question-description`, `.problem-statement`, `.problem-description`, `[class*='description']`, `[class*='instructions']`, `.testcase-output`, `[class*='console']`, and `[class*='output']`.
+     - Measures rendered dimensions (`offsetWidth * offsetHeight`) and selects the candidate with the largest rendered area (the right-hand coding workspace is >400px tall and >500px wide, compared to ~50px tall snippet boxes).
+  2. **Non-ReadOnly Editor & Attached Model Resolution (`background.js`, `executor.js`, `extractor.js`):**
+     - Matches `eds` against `findMainEditorElement`.
+     - Filters `eds` via `!e.getRawOptions().readOnly` and selects the workspace editor (`pool[pool.length - 1]`).
+     - In `getModels()`, prioritizes attached models (`m.isAttachedToEditor()`) and falls back to `models[models.length - 1]`.
+  3. **Strict Empty-Code Guardrail:**
+     - Enforces `if (!targetCode || !targetCode.trim()) return { success: false, error: "Empty code payload rejected: refusing to wipe editor buffer" }` across both `background.js` and `executor.js`.
+- **Verification Suite:**
+  - **Full Pytest Suite:** **113/113 passing (100%)** in 61s across all 18 test modules.
+  - **Phase 7 Coding Automation Engine Suite:** **16/16 passing (100%)**.
+  - **Phase 7 Coding and Stealth Suite:** **6/6 passing (100%)**.
+  - All contracts (`window.monaco.editor.getModels()`, `window.ace.edit`) preserved.
 
 ---
 
 > *This document represents the complete, verified state of the QuizZy project as of October 2026. All components have been verified via automated tests and runtime audits.*
+
+

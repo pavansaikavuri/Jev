@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -32,6 +33,7 @@ from backend.core.llm_client import (
 from backend.core.normalizer import normalize_text_answer
 from backend.core.searxng_client import get_searxng_config, is_searxng_circuit_open
 from backend.schemas import (
+    DebugSolveResponse,
     FeedbackRequest,
     FeedbackResponse,
     HealthResponse,
@@ -113,7 +115,7 @@ def save_or_update_question_csv(
                     r_opts = []
                 r_sorted_opts = sorted([normalize_text_answer(o) for o in r_opts])
 
-                if r_q == norm_q and (norm_type == "text" or r_sorted_opts == sorted_norm_opts):
+                if r_q == norm_q and (norm_type in ("text", "code") or r_sorted_opts == sorted_norm_opts):
                     # Duplicate found -> update row in place
                     matched_id = row.get("id")
                     row["subject"] = subject
@@ -211,15 +213,95 @@ async def cache_statistics() -> StatsResponse:
     )
 
 
-@app.post("/solve", response_model=SolveResponse)
-async def solve_endpoint(req: SolveRequest) -> SolveResponse:
+def _sanitize_solve_request(req: SolveRequest) -> None:
+    """Normalize misclassified q_types and enforce cache bypass on retry."""
+    # Sanitize false-positive order classification
+    if req.q_type == "order" and req.options:
+        opt_lower = [str(o).strip().lower() for o in req.options]
+        has_mcq_opt = any(
+            o in ("none of these", "none of the above", "all of the above", "all of these")
+            or o.startswith("both ")
+            or o.startswith("neither ")
+            for o in opt_lower
+        )
+        has_not_same_order = bool(
+            re.search(r"\bnot(?:\s+necessarily)?\s+in(?:\s+the)?\s+same\s+order\b", req.question, re.I)
+        )
+        has_order_disclaimer = bool(
+            re.search(
+                r"\b(in\s+order\s+to|order\s+of\s+magnitude|first\s+order|second\s+order|out\s+of\s+order)\b",
+                req.question,
+                re.I,
+            )
+        )
+        has_order_directive = bool(
+            re.search(
+                r"\b(arrange|chronological|rearrange|put\s+(?:the\s+following\s+)?in\s+order|sort\s+the\s+following|rank\s+the\s+following)\b",
+                req.question,
+                re.I,
+            )
+        )
+        if has_mcq_opt or has_not_same_order or (has_order_disclaimer and not has_order_directive):
+            req.q_type = "mcq"
+
+    # Auto-upgrade misclassified MCQ to order if stem has ordering directives
+    # and options are individual statements rather than pre-combined letter sequences like "B, D, A, C"
+    if req.q_type == "mcq" and req.options and len(req.options) >= 2:
+        is_order_stem = bool(
+            re.search(
+                r"\b(rearrange\s+the\s+following.*in\s+(?:the\s+)?correct\s+order|drag\s+and\s+drop\s+to\s+order|drag\s+to\s+reorder|put\s+the\s+following.*in\s+order|arrange\s+the\s+following.*in\s+(?:the\s+)?correct\s+order)\b",
+                req.question,
+                re.I,
+            )
+        )
+        options_are_sequences = any(
+            bool(re.search(r"^[A-Fa-f0-9](\s*[,-\u2013>]+\s*[A-Fa-f0-9]){2,}", str(o).strip()))
+            for o in req.options
+        )
+        if is_order_stem and not options_are_sequences:
+            req.q_type = "order"
+
+    # Mandatory Cache Bypass on Retry: never serve stale Attempt 1 failure on Attempt 2
+    if req.bypass_cache or bool(req.error_context and str(req.error_context).strip()):
+        req.bypass_cache = True
+
+
+def _build_cached_response(req: SolveRequest, cached: Dict[str, Any], elapsed_ms: float) -> SolveResponse:
+    """Map a cache row onto the public SolveResponse contract."""
+    return SolveResponse(
+        status="ok",
+        q_type=req.q_type,
+        answer=cached.get("answer", ""),
+        selected_index=cached.get("selected_index"),
+        selected_text=cached.get("selected_text"),
+        selected_indices=cached.get("selected_indices"),
+        selected_texts=cached.get("selected_texts"),
+        canonical_keys=cached.get("canonical_keys"),
+        permutation_indices=cached.get("permutation_indices"),
+        ordered_texts=cached.get("ordered_texts"),
+        reason=cached.get("reason", ""),
+        confidence_tier=cached.get("confidence_tier", ""),
+        confidence_label=cached.get("confidence_label", "high"),
+        confidence_score=cached.get("confidence_score", 1.0),
+        auto_eligible=cached.get("auto_eligible", True),
+        cache_hit=True,
+        latency_ms=round(elapsed_ms, 2),
+        searxng_used=cached.get("searxng_used", False),
+        search_sources=cached.get("search_sources", []),
+        language=req.language if req.q_type == "code" else None,
+    )
+
+
+async def _solve_core(req: SolveRequest) -> Tuple[SolveResponse, Dict[str, Any]]:
     """
-    Solve a quiz question across MCQ, unlabelled order blocks, and free text.
-    Checks the order-invariant SQLite cache first (unless bypass_cache=True).
-    On cache miss, runs parallel primary models + fallback solver, enforcing
-    Zero-Poison caching rules and derived cross-model confidence.
+    Shared solve pipeline used by /solve and /debug/solve.
+
+    Returns the public response plus a debug trace (models_called,
+    agreement_details). The trace is empty on cache hits because cached
+    rows intentionally do not store per-model diagnostics.
     """
     t0 = time.perf_counter()
+    _sanitize_solve_request(req)
 
     # 1. Cache Lookup (unless bypassed)
     if not req.bypass_cache:
@@ -228,30 +310,21 @@ async def solve_endpoint(req: SolveRequest) -> SolveResponse:
             q_type=req.q_type,
             question=req.question,
             options=req.options,
+            language=req.language,
+            starter_code=req.starter_code,
         )
         if cached:
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
-            return SolveResponse(
-                status="ok",
-                q_type=req.q_type,
-                answer=cached.get("answer", ""),
-                selected_index=cached.get("selected_index"),
-                selected_text=cached.get("selected_text"),
-                permutation_indices=cached.get("permutation_indices"),
-                ordered_texts=cached.get("ordered_texts"),
-                reason=cached.get("reason", ""),
-                confidence_tier=cached.get("confidence_tier", ""),
-                confidence_label=cached.get("confidence_label", "high"),
-                confidence_score=cached.get("confidence_score", 1.0),
-                auto_eligible=cached.get("auto_eligible", True),
-                cache_hit=True,
-                latency_ms=round(elapsed_ms, 2),
-                searxng_used=cached.get("searxng_used", False),
-                search_sources=cached.get("search_sources", []),
-            )
+            return _build_cached_response(req, cached, elapsed_ms), {
+                "models_called": list(cached.get("models_called", []) or []),
+                "agreement_details": {},
+            }
 
     # 2. Live Solver Execution
     client = getattr(app.state, "http_client", None)
+    if client is None or getattr(client, "is_closed", False):
+        client = httpx.AsyncClient()
+        app.state.http_client = client
     config = getattr(app.state, "models_config", None)
 
     solver_res = await solve_question(
@@ -261,6 +334,9 @@ async def solve_endpoint(req: SolveRequest) -> SolveResponse:
         options=req.options,
         config=config,
         client=client,
+        language=req.language,
+        starter_code=req.starter_code,
+        error_context=req.error_context,
     )
 
     tier = solver_res.confidence_tier
@@ -288,7 +364,13 @@ async def solve_endpoint(req: SolveRequest) -> SolveResponse:
         confidence_score = 0.0
         auto_eligible = False
 
-    answer_val = solver_res.canonical_key if is_ok and solver_res.canonical_key else ""
+    if is_ok:
+        if req.q_type in ("mcq", "order", "multi"):
+            answer_val = solver_res.canonical_key or ""
+        else:
+            answer_val = solver_res.selected_text or getattr(solver_res, "raw_answer", None) or solver_res.canonical_key or ""
+    else:
+        answer_val = ""
 
     # Zero-Poison Rule: Cache ONLY high and medium confidence solutions
     if is_ok and tier in (
@@ -303,14 +385,19 @@ async def solve_endpoint(req: SolveRequest) -> SolveResponse:
             question=req.question,
             options=req.options,
             solver_res=solver_res,
+            language=req.language,
+            starter_code=req.starter_code,
         )
 
-    return SolveResponse(
+    response = SolveResponse(
         status="ok" if is_ok else "uncertain",
         q_type=req.q_type,
         answer=answer_val,
         selected_index=solver_res.selected_index,
         selected_text=solver_res.selected_text,
+        selected_indices=getattr(solver_res, "selected_indices", None),
+        selected_texts=getattr(solver_res, "selected_texts", None),
+        canonical_keys=getattr(solver_res, "canonical_keys", None),
         permutation_indices=solver_res.permutation_indices,
         ordered_texts=solver_res.ordered_texts,
         reason=solver_res.reason or "",
@@ -322,7 +409,36 @@ async def solve_endpoint(req: SolveRequest) -> SolveResponse:
         latency_ms=round(solver_res.latency_ms, 2),
         searxng_used=solver_res.searxng_used,
         search_sources=solver_res.search_sources,
+        language=req.language if req.q_type == "code" else None,
+        error=solver_res.error,
     )
+    return response, {
+        "models_called": list(getattr(solver_res, "models_called", []) or []),
+        "agreement_details": dict(getattr(solver_res, "agreement_details", {}) or {}),
+    }
+
+
+@app.post("/solve", response_model=SolveResponse)
+async def solve_endpoint(req: SolveRequest) -> SolveResponse:
+    """
+    Solve a quiz question across MCQ, unlabelled order blocks, free text, and code.
+    Checks the order-invariant SQLite cache first (unless bypass_cache=True).
+    On cache miss, runs parallel primary models + fallback solver, enforcing
+    Zero-Poison caching rules and derived cross-model confidence.
+    """
+    response, _ = await _solve_core(req)
+    return response
+
+
+@app.post("/debug/solve", response_model=DebugSolveResponse)
+async def debug_solve_endpoint(req: SolveRequest) -> DebugSolveResponse:
+    """
+    Development-only variant of /solve that also returns the full decision
+    trace: models_called and agreement_details (per-model latencies and
+    consensus path). Cache hits return an empty trace.
+    """
+    response, trace = await _solve_core(req)
+    return DebugSolveResponse(**response.model_dump(), **trace)
 
 
 @app.post("/feedback", response_model=FeedbackResponse)
@@ -342,6 +458,8 @@ async def submit_feedback(req: FeedbackRequest) -> FeedbackResponse:
         correct_answer=req.correct_answer,
         confidence_tier_at_failure=req.confidence_tier_at_failure,
         notes=req.notes,
+        language=req.language,
+        starter_code=req.starter_code,
     )
 
     csv_exported = False

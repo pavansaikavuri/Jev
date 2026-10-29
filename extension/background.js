@@ -23,13 +23,21 @@ async function resolveTargetTab(message, sender) {
   if (sender && sender.tab && sender.tab.id) {
     return sender.tab;
   }
-  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-  return (tabs && tabs[0]) ? tabs[0] : null;
+  try {
+    let tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tabs && tabs[0]) return tabs[0];
+    tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (tabs && tabs[0]) return tabs[0];
+    tabs = await chrome.tabs.query({ active: true });
+    return (tabs && tabs[0]) ? tabs[0] : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 // Injects extractor, executor, and floating HUD into target tab
-async function injectAndToggleFloatingHud(tabId, shouldToggle = true) {
-  if (!tabId) return { success: false };
+async function injectAndToggleFloatingHud(tabId, shouldToggle = true, autoShow = true) {
+  if (!tabId) return { success: false, error: "Missing tabId" };
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
@@ -47,13 +55,21 @@ async function injectAndToggleFloatingHud(tabId, shouldToggle = true) {
       files: ["floating_hud.js"]
     });
 
-    if (shouldToggle) {
-      chrome.tabs.sendMessage(tabId, { action: "TOGGLE_FLOATING_HUD_COMMAND" }).catch(() => {});
-    } else {
-      chrome.tabs.sendMessage(tabId, { action: "SHOW_FLOATING_HUD_COMMAND" }).catch(() => {});
+    const hudResult = results && results[0] ? results[0].result : { success: true };
+
+    if (hudResult && hudResult.codingMode) {
+      return hudResult;
     }
 
-    return results && results[0] ? results[0].result : { success: true };
+    if (shouldToggle && hudResult && hudResult.alreadyMounted) {
+      chrome.tabs.sendMessage(tabId, { action: "TOGGLE_FLOATING_HUD_COMMAND" }).catch(() => {});
+    } else if (autoShow) {
+      chrome.tabs.sendMessage(tabId, { action: "SHOW_FLOATING_HUD_COMMAND" }).catch(() => {});
+    } else {
+      chrome.tabs.sendMessage(tabId, { action: "HIDE_FLOATING_HUD_COMMAND" }).catch(() => {});
+    }
+
+    return hudResult;
   } catch (err) {
     console.warn("[QuizZy Service Worker] Injection failed:", err);
     return { success: false, error: err.message };
@@ -94,6 +110,68 @@ if (typeof chrome !== "undefined" && chrome.sidePanel && chrome.sidePanel.setPan
   });
 }
 
+// Track active popup window ID to strictly prevent opening duplicate popup windows
+let activePopupWindowId = null;
+let isSidePanelOpen = false;
+
+// Monitor side panel lifecycle via port connection for mutual exclusivity
+if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onConnect) {
+  chrome.runtime.onConnect.addListener((port) => {
+    if (port && port.name === "quizzy-sidepanel-port") {
+      isSidePanelOpen = true;
+      if (chrome.tabs && chrome.tabs.query) {
+        chrome.tabs.query({}, (tabs) => {
+          if (!tabs || !Array.isArray(tabs)) return;
+          for (const t of tabs) {
+            if (t && t.id) {
+              chrome.tabs.sendMessage(t.id, { action: "SIDEPANEL_STATE_CHANGED", isOpen: true }).catch(() => {});
+              chrome.tabs.sendMessage(t.id, { action: "HIDE_FLOATING_HUD_COMMAND" }).catch(() => {});
+            }
+          }
+        });
+      }
+      port.onDisconnect.addListener(() => {
+        isSidePanelOpen = false;
+        if (chrome.tabs && chrome.tabs.query) {
+          chrome.tabs.query({}, (tabs) => {
+            if (!tabs || !Array.isArray(tabs)) return;
+            for (const t of tabs) {
+              if (t && t.id) {
+                chrome.tabs.sendMessage(t.id, { action: "SIDEPANEL_STATE_CHANGED", isOpen: false }).catch(() => {});
+              }
+            }
+          });
+        }
+      });
+    }
+  });
+}
+
+if (typeof chrome !== "undefined" && chrome.windows) {
+  // Clear reference when popup window is closed
+  if (chrome.windows.onRemoved) {
+    chrome.windows.onRemoved.addListener((closedWinId) => {
+      if (closedWinId === activePopupWindowId) {
+        activePopupWindowId = null;
+      }
+    });
+  }
+
+  // Auto-cleanup: Close any unwanted leftover "sidepanel.html?mode=popup" windows
+  if (chrome.windows.getAll && chrome.windows.remove) {
+    try {
+      chrome.windows.getAll({ populate: true }, (windows) => {
+        if (!windows || !Array.isArray(windows)) return;
+        for (const win of windows) {
+          if (win && win.type === "popup" && win.tabs && win.tabs.some(t => t.url && t.url.includes("sidepanel.html?mode=popup"))) {
+            chrome.windows.remove(win.id);
+          }
+        }
+      });
+    } catch (_) {}
+  }
+}
+
 // Action click listener: Clicking extension toolbar icon immediately toggles the Floating Bar on page!
 if (typeof chrome !== "undefined" && chrome.action && chrome.action.onClicked) {
   chrome.action.onClicked.addListener(async (tab) => {
@@ -108,51 +186,516 @@ if (typeof chrome !== "undefined" && chrome.action && chrome.action.onClicked) {
 }
 
 // ==========================================================================
-// Emergency Kill Switch & Auto-Injection Listeners
+// Zero-DOM Visual Feedback via Extension Toolbar Badge (chrome.action.setBadgeText)
 // ==========================================================================
-if (typeof chrome !== "undefined" && chrome.tabs) {
-  // If the user switches away to a different tab, immediately notify the HUD to halt Auto Mode
-  if (chrome.tabs.onActivated) {
-    chrome.tabs.onActivated.addListener((activeInfo) => {
-      chrome.runtime.sendMessage({
-        action: "KILL_SWITCH_TRIGGERED",
-        reason: "Active tab changed by user. Auto Mode paused for safety.",
-        tabId: activeInfo.tabId
-      }).catch(() => {});
-    });
+function updateActionBadge(text, color, tabId) {
+  try {
+    if (typeof chrome !== "undefined" && chrome.action && typeof chrome.action.setBadgeText === "function") {
+      const details = { text: text || "" };
+      if (typeof tabId === "number") details.tabId = tabId;
+      chrome.action.setBadgeText(details);
+      // Enforce white & blue UI palette: vibrant blue background
+      const badgeColor = "#2563EB";
+      if (typeof chrome.action.setBadgeBackgroundColor === "function") {
+        const bgDetails = { color: badgeColor };
+        if (typeof tabId === "number") bgDetails.tabId = tabId;
+        chrome.action.setBadgeBackgroundColor(bgDetails);
+      }
+    }
+  } catch (_) {}
+}
+
+// Auto-Inject on Tab Load / Refresh for Allowed Hosts
+if (typeof chrome !== "undefined" && chrome.tabs && chrome.tabs.onUpdated) {
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (changeInfo.status === "complete" && tab && tab.url) {
+      if (tab.url.startsWith("chrome://") || tab.url.startsWith("edge://") || tab.url.startsWith("chrome-extension://")) {
+        return;
+      }
+      try {
+        const urlObj = new URL(tab.url);
+        const hostname = urlObj.hostname.toLowerCase();
+        const defaultAllowed = ["learning.ccbp.in", "127.0.0.1", "localhost", "::1"];
+        if (defaultAllowed.includes(hostname)) {
+          injectAndToggleFloatingHud(tabId, false, false);
+        } else if (chrome.storage && chrome.storage.local) {
+          chrome.storage.local.get(["allowedHosts", "auto_mode_allowlist"], (data) => {
+            const allowed = (data.allowedHosts || []).concat(data.auto_mode_allowlist || []);
+            if (allowed.includes(hostname)) {
+              injectAndToggleFloatingHud(tabId, false, false);
+            }
+          });
+        }
+      } catch (_) {}
+    }
+  });
+}
+
+// SPA Route Change Hook: Inject & Wire shortcuts after SPA navigation without manual popup click
+if (typeof chrome !== "undefined" && chrome.webNavigation && chrome.webNavigation.onHistoryStateUpdated) {
+  chrome.webNavigation.onHistoryStateUpdated.addListener(async (details) => {
+    if (details && details.tabId && details.url) {
+      try {
+        const urlObj = new URL(details.url);
+        const hostname = urlObj.hostname.toLowerCase();
+        const defaultAllowed = ["learning.ccbp.in", "127.0.0.1", "localhost", "::1"];
+        if (defaultAllowed.includes(hostname)) {
+          injectAndToggleFloatingHud(details.tabId, false, false);
+        } else if (chrome.storage && chrome.storage.local) {
+          chrome.storage.local.get(["allowedHosts"], (data) => {
+            const allowed = data.allowedHosts || [];
+            if (allowed.includes(hostname)) {
+              injectAndToggleFloatingHud(details.tabId, false, false);
+            }
+          });
+        }
+      } catch (_) {}
+    }
+  });
+}
+
+// Browser-Level Keyboard Shortcut Command Router (Alt+S, Alt+A, Alt+N, Alt+M)
+async function handleUnifiedCommand(command, targetTab) {
+  if (!targetTab || !targetTab.id) return { success: false, error: "No target tab" };
+  const tabId = targetTab.id;
+  const tabUrl = (targetTab.url || "").toLowerCase();
+
+  // Guard against browser internal pages
+  if (tabUrl.startsWith("chrome://") || tabUrl.startsWith("edge://") || tabUrl.startsWith("chrome-extension://")) {
+    return { success: false, error: "Internal browser page" };
   }
 
-  // If page navigates away, halt Auto Mode; when page finishes loading on allowed host, auto-inject HUD!
-  if (chrome.tabs.onUpdated) {
-    chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-      if (changeInfo.status === "loading" && changeInfo.url) {
-        chrome.runtime.sendMessage({
-          action: "KILL_SWITCH_TRIGGERED",
-          reason: `Page navigated to ${changeInfo.url}. Auto Mode halted.`,
-          tabId: tabId
-        }).catch(() => {});
-      }
+  // 0. If side panel is open, all shortcuts route to the side panel!
+  if (isSidePanelOpen) {
+    try {
+      chrome.runtime.sendMessage({ action: "FORWARD_SHORTCUT_TO_SIDEPANEL", command });
+      return { success: true, forwarded_to_sidepanel: true };
+    } catch (_) {}
+  }
 
-      // Auto-launch Floating Bar on allowed host pages as soon as loading completes
-      if (changeInfo.status === "complete" && tab && tab.url) {
-        try {
-          const urlObj = new URL(tab.url);
-          const hostname = urlObj.hostname.toLowerCase();
-          const defaultAllowed = ["learning.ccbp.in", "127.0.0.1", "localhost", "::1"];
-          
-          if (defaultAllowed.includes(hostname)) {
-            injectAndToggleFloatingHud(tabId, false);
-          } else if (chrome.storage && chrome.storage.local) {
-            chrome.storage.local.get(["allowedHosts"], (data) => {
-              const allowed = data.allowedHosts || [];
-              if (allowed.includes(hostname)) {
-                injectAndToggleFloatingHud(tabId, false);
-              }
+  // 1. Try sending the shortcut action directly to the tab (handled by floating_hud.js)
+  try {
+    const tabRes = await new Promise((resolve) => {
+      chrome.tabs.sendMessage(tabId, { action: "SHORTCUT_ACTION", command }, (res) => {
+        if (chrome.runtime.lastError || !res) {
+          resolve(null);
+        } else {
+          resolve(res);
+        }
+      });
+    });
+
+    if (tabRes && (tabRes.handled || tabRes.success)) {
+      return tabRes;
+    }
+  } catch (_) {}
+
+  // 2. Check if this is a dedicated proctored coding route
+  const isCoding = tabUrl.includes("/question/") || tabUrl.includes("/coding/");
+  if (isCoding) {
+    if (command === "trigger_solve") {
+      return handleTriggerSolve({ tabId }, targetTab);
+    } else if (command === "trigger_apply") {
+      return handleTriggerApply({ tabId }, targetTab);
+    } else if (command === "trigger_auto_loop") {
+      return handleTriggerAutoLoop({ tabId }, targetTab);
+    } else if (command === "open_popup_hud") {
+      return handleOpenPopupHud({ force: true }, targetTab);
+    }
+  }
+
+  // 3. For quiz routes where floating HUD is not yet injected or not ready:
+  if (command === "open_popup_hud") {
+    return injectAndToggleFloatingHud(tabId, true);
+  }
+
+  // Inject extractor, executor, and HUD
+  await injectAndToggleFloatingHud(tabId, false);
+
+  // Forward the shortcut action to the newly injected HUD
+  return new Promise((resolve) => {
+    chrome.tabs.sendMessage(tabId, { action: "SHORTCUT_ACTION", command }, (res) => {
+      resolve(res || { success: true });
+    });
+  });
+}
+
+if (typeof chrome !== "undefined" && chrome.commands && chrome.commands.onCommand) {
+  chrome.commands.onCommand.addListener(async (command) => {
+    try {
+      const activeTab = await resolveTargetTab(null, null);
+      if (!activeTab || !activeTab.id) return;
+      await handleUnifiedCommand(command, activeTab);
+    } catch (err) {
+      console.warn("[QuizZy Service Worker] Command execution error:", err);
+    }
+  });
+}
+
+// Async Handler: Open Out-of-Page Popup HUD
+async function handleOpenPopupHud(message, targetTab) {
+  if (!message || message.autoTriggered || message.auto || !message.force) {
+    return { success: true, suppressed: true, message: "Auto-popup suppressed" };
+  }
+  const popupUrl = chrome.runtime.getURL("sidepanel.html?mode=popup");
+  if (chrome.windows && chrome.windows.create) {
+    if (activePopupWindowId && chrome.windows.get) {
+      return new Promise((resolve) => {
+        chrome.windows.get(activePopupWindowId, (existingWin) => {
+          if (chrome.runtime.lastError || !existingWin) {
+            chrome.windows.create({
+              url: popupUrl,
+              type: "popup",
+              width: 420,
+              height: 640,
+              focused: true
+            }, (win) => {
+              activePopupWindowId = win ? win.id : null;
+              resolve({ success: true, windowId: activePopupWindowId });
             });
+          } else {
+            if (chrome.windows.update) {
+              chrome.windows.update(activePopupWindowId, { focused: true }, () => {
+                resolve({ success: true, windowId: activePopupWindowId, existing: true });
+              });
+            } else {
+              resolve({ success: true, windowId: activePopupWindowId, existing: true });
+            }
           }
-        } catch (_) {}
+        });
+      });
+    } else {
+      return new Promise((resolve) => {
+        chrome.windows.create({
+          url: popupUrl,
+          type: "popup",
+          width: 420,
+          height: 640,
+          focused: true
+        }, (win) => {
+          activePopupWindowId = win ? win.id : null;
+          resolve({ success: true, windowId: activePopupWindowId });
+        });
+      });
+    }
+  } else {
+    return { success: false, error: "chrome.windows.create not available" };
+  }
+}
+
+// Async Handler: Trigger Unified Solve & Auto-Write into Monaco Editor
+async function handleTriggerSolve(message, targetTab) {
+  if (!targetTab || !targetTab.id) {
+    return { success: false, error: "No target tab found." };
+  }
+  const tabId = targetTab.id;
+  updateActionBadge("...", "#2563EB", tabId);
+
+  try {
+    // Step 1: Read code editor state from MAIN world
+    const editorRes = await chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      world: "MAIN",
+      func: readCodeFromMainWorld
+    });
+    const editorData = editorRes && editorRes[0] ? editorRes[0].result : {};
+
+    // Step 2: Extract problem description from tab
+    const extractRes = await chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      world: "ISOLATED",
+      func: () => {
+        if (typeof window.QuizZyExtractor !== "undefined" && typeof window.QuizZyExtractor.extractCodingProblem === "function") {
+          return window.QuizZyExtractor.extractCodingProblem();
+        }
+        if (typeof window.QuizZyExtractor !== "undefined" && typeof window.QuizZyExtractor.extractCodingQuestionFromDom === "function") {
+          return window.QuizZyExtractor.extractCodingQuestionFromDom();
+        }
+        return { question: (document.body ? document.body.innerText : "").slice(0, 3000), language: "python", starter_code: "" };
       }
     });
+    const extractData = extractRes && extractRes[0] ? extractRes[0].result : {};
+
+    const effectiveLang = editorData.language || extractData.language || "cpp";
+    const effectiveStarter = editorData.code || extractData.starter_code || "";
+    const problemStatement = extractData.question || "Coding Practice Problem";
+
+    const solvePayload = {
+      subject: "Coding Practice",
+      q_type: "code",
+      question: problemStatement,
+      language: effectiveLang,
+      starter_code: effectiveStarter,
+      options: []
+    };
+
+    // Step 3: Solve Attempt 1 via backend
+    const solveRes = await fetch(`${BACKEND_BASE_URL}/solve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(solvePayload)
+    });
+    if (!solveRes.ok) {
+      updateActionBadge("ERR", "#DC2626", tabId);
+      setTimeout(() => updateActionBadge("", "", tabId), 4000);
+      throw new Error(`Backend solve failed with HTTP ${solveRes.status}`);
+    }
+    const solveJson = await solveRes.json();
+    const codeToApply = solveJson.answer || solveJson.code || solveJson.selected_text || "";
+    if (!codeToApply || typeof codeToApply !== "string" || !codeToApply.trim()) {
+      updateActionBadge("ERR", "#DC2626", tabId);
+      setTimeout(() => updateActionBadge("", "", tabId), 4000);
+      return { success: false, error: "Backend solver returned empty code solution." };
+    }
+
+    // Cache last solved code in storage so Alt+A can re-apply anytime
+    chrome.storage.local.set({ lastSolvedCode: codeToApply });
+
+    // Step 3b: Badge indicates writing into black editor
+    updateActionBadge("WRT", "#D97706", tabId);
+
+    // Write Attempt 1 Code into Editor in MAIN World
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        world: "MAIN",
+        func: writeCodeWithHumanTypingInMainWorld,
+        args: [{
+          code: codeToApply,
+          language: effectiveLang,
+          starter_code: effectiveStarter
+        }]
+      });
+    } catch (wErr) {
+      console.warn("[QuizZy] MAIN world Attempt 1 typing error:", wErr);
+    }
+
+    // Step 4: Execute autoCompileAndSubmitLoop in ISOLATED world with self-healing retry callback
+    const loopRes = await chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      world: "ISOLATED",
+      func: async (attempt1Code, probText, lang, starter) => {
+        if (typeof window.QuizZyExecutor !== "undefined" && typeof window.QuizZyExecutor.autoCompileAndSubmitLoop === "function") {
+          const res = await window.QuizZyExecutor.autoCompileAndSubmitLoop({
+            code: attempt1Code,
+            question: probText,
+            language: lang,
+            starter_code: starter
+          }, (retryPayload) => {
+            return new Promise((resolve) => {
+              chrome.runtime.sendMessage({
+                action: "SOLVE_REQUEST",
+                payload: Object.assign({
+                  subject: "Coding Practice",
+                  q_type: "code",
+                  question: probText,
+                  language: lang,
+                  starter_code: starter
+                }, retryPayload)
+              }, (response) => {
+                resolve(response && response.data ? response.data : null);
+              });
+            });
+          });
+          return res;
+        }
+        return { success: false, error: "QuizZyExecutor not available in tab" };
+      },
+      args: [codeToApply, problemStatement, effectiveLang, effectiveStarter]
+    });
+
+    const loopResult = loopRes && loopRes[0] ? loopRes[0].result : null;
+    const isSuccess = loopResult && (loopResult.status === "success" || loopResult.passed || loopResult.success);
+    if (isSuccess) {
+      updateActionBadge("OK", "#16A34A", tabId);
+      setTimeout(() => updateActionBadge("", "", tabId), 4000);
+    } else {
+      updateActionBadge("ERR", "#DC2626", tabId);
+      setTimeout(() => updateActionBadge("", "", tabId), 4000);
+    }
+
+    return { success: true, solved: true, solution: solveJson, loopResult: loopResult };
+  } catch (err) {
+    updateActionBadge("ERR", "#DC2626", tabId);
+    setTimeout(() => updateActionBadge("", "", tabId), 4000);
+    return { success: false, error: err.message };
+  }
+}
+
+// Async Handler: Trigger Apply Code (Alt+A) with auto-fallback to solve
+async function handleTriggerApply(message, targetTab) {
+  if (!targetTab || !targetTab.id) {
+    return { success: false, error: "No target tab found." };
+  }
+  const tabId = targetTab.id;
+
+  return new Promise((resolve) => {
+    chrome.storage.local.get(["lastSolvedCode"], async (data) => {
+      const code = data.lastSolvedCode;
+      if (!code) {
+        // Fallback: If no code cached yet, automatically trigger solve & write!
+        const solveRes = await handleTriggerSolve(message, targetTab);
+        resolve(solveRes);
+        return;
+      }
+
+      updateActionBadge("WRT", "#D97706", tabId);
+      try {
+        const writeRes = await chrome.scripting.executeScript({
+          target: { tabId: tabId },
+          world: "MAIN",
+          func: writeCodeWithHumanTypingInMainWorld,
+          args: [{ code }]
+        });
+        updateActionBadge("OK", "#16A34A", tabId);
+        setTimeout(() => updateActionBadge("", "", tabId), 4000);
+        resolve({ success: true, applied: true, result: writeRes && writeRes[0] ? writeRes[0].result : null });
+      } catch (err) {
+        updateActionBadge("ERR", "#DC2626", tabId);
+        setTimeout(() => updateActionBadge("", "", tabId), 4000);
+        resolve({ success: false, error: err.message });
+      }
+    });
+  });
+}
+
+// Async Handler: Trigger Auto Loop (Alt+N)
+async function handleTriggerAutoLoop(message, targetTab) {
+  if (!targetTab || !targetTab.id) {
+    return { success: false, error: "No target tab found." };
+  }
+  const tabId = targetTab.id;
+  updateActionBadge("WRT", "#D97706", tabId);
+
+  try {
+    let codeToApply = (message && message.code) || (message && message.payload && message.payload.code) || "";
+
+    const editorRes = await chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      world: "MAIN",
+      func: readCodeFromMainWorld
+    });
+    const editorData = editorRes && editorRes[0] ? editorRes[0].result : {};
+
+    const extractRes = await chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      world: "ISOLATED",
+      func: () => {
+        if (typeof window.QuizZyExtractor !== "undefined" && typeof window.QuizZyExtractor.extractCodingProblem === "function") {
+          return window.QuizZyExtractor.extractCodingProblem();
+        }
+        if (typeof window.QuizZyExtractor !== "undefined" && typeof window.QuizZyExtractor.extractCodingQuestionFromDom === "function") {
+          return window.QuizZyExtractor.extractCodingQuestionFromDom();
+        }
+        return { question: (document.body ? document.body.innerText : "").slice(0, 3000), language: "python", starter_code: "" };
+      }
+    });
+    const extractData = extractRes && extractRes[0] ? extractRes[0].result : {};
+
+    const effectiveLang = editorData.language || extractData.language || "cpp";
+    const effectiveStarter = editorData.code || extractData.starter_code || "";
+    const problemStatement = extractData.question || "Coding Practice Problem";
+
+    if (!codeToApply) {
+      const stored = await new Promise(r => chrome.storage.local.get(["lastSolvedCode"], r));
+      if (stored && stored.lastSolvedCode) {
+        codeToApply = stored.lastSolvedCode;
+      }
+    }
+
+    if (!codeToApply) {
+      updateActionBadge("...", "#2563EB", tabId);
+      const solveRes = await fetch(`${BACKEND_BASE_URL}/solve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          subject: "Coding Practice",
+          q_type: "code",
+          question: problemStatement,
+          language: effectiveLang,
+          starter_code: effectiveStarter,
+          options: []
+        })
+      });
+      if (!solveRes.ok) {
+        updateActionBadge("ERR", "#DC2626", tabId);
+        setTimeout(() => updateActionBadge("", "", tabId), 4000);
+        throw new Error(`Backend solve failed with HTTP ${solveRes.status}`);
+      }
+      const solveJson = await solveRes.json();
+      codeToApply = solveJson.answer || solveJson.code || solveJson.selected_text || "";
+      if (codeToApply) {
+        chrome.storage.local.set({ lastSolvedCode: codeToApply });
+      }
+    }
+
+    if (!codeToApply) {
+      updateActionBadge("ERR", "#DC2626", tabId);
+      setTimeout(() => updateActionBadge("", "", tabId), 4000);
+      return { success: false, error: "No code available for auto-loop" };
+    }
+
+    updateActionBadge("WRT", "#D97706", tabId);
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        world: "MAIN",
+        func: writeCodeWithHumanTypingInMainWorld,
+        args: [{
+          code: codeToApply,
+          language: effectiveLang,
+          starter_code: effectiveStarter
+        }]
+      });
+    } catch (_) {}
+
+    const loopRes = await chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      world: "ISOLATED",
+      func: async (attempt1Code, probText, lang, starter) => {
+        if (typeof window.QuizZyExecutor !== "undefined" && typeof window.QuizZyExecutor.autoCompileAndSubmitLoop === "function") {
+          return await window.QuizZyExecutor.autoCompileAndSubmitLoop({
+            code: attempt1Code,
+            question: probText,
+            language: lang,
+            starter_code: starter
+          }, (retryPayload) => {
+            return new Promise((resolve) => {
+              chrome.runtime.sendMessage({
+                action: "SOLVE_REQUEST",
+                payload: Object.assign({
+                  subject: "Coding Practice",
+                  q_type: "code",
+                  question: probText,
+                  language: lang,
+                  starter_code: starter
+                }, retryPayload)
+              }, (response) => {
+                resolve(response && response.data ? response.data : null);
+              });
+            });
+          });
+        }
+        return { success: false, error: "QuizZyExecutor not available in tab" };
+      },
+      args: [codeToApply, problemStatement, effectiveLang, effectiveStarter]
+    });
+
+    const loopResult = loopRes && loopRes[0] ? loopRes[0].result : null;
+    const isSuccess = loopResult && (loopResult.status === "success" || loopResult.passed || loopResult.success);
+    if (isSuccess) {
+      updateActionBadge("OK", "#16A34A", tabId);
+      setTimeout(() => updateActionBadge("", "", tabId), 4000);
+    } else {
+      updateActionBadge("ERR", "#DC2626", tabId);
+      setTimeout(() => updateActionBadge("", "", tabId), 4000);
+    }
+
+    return { success: true, loopResult: loopResult };
+  } catch (err) {
+    updateActionBadge("ERR", "#DC2626", tabId);
+    setTimeout(() => updateActionBadge("", "", tabId), 4000);
+    return { success: false, error: err.message };
   }
 }
 
@@ -160,11 +703,47 @@ if (typeof chrome !== "undefined" && chrome.tabs) {
 // Global Runtime Message Router
 // ==========================================================================
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || !message.action) {
+  if (!message || (!message.action && !message.type)) {
     return false;
   }
 
-  const action = message.action;
+  const action = message.action || message.type;
+
+  // 0. Sidepanel state queries and mutual exclusivity commands
+  if (action === "GET_SIDEPANEL_STATE") {
+    sendResponse({ success: true, isOpen: isSidePanelOpen });
+    return false;
+  }
+  if (action === "CLOSE_SIDEPANEL") {
+    isSidePanelOpen = false;
+    chrome.runtime.sendMessage({ action: "CLOSE_SIDEPANEL_COMMAND" }).catch(() => {});
+    if (activePopupWindowId && chrome.windows && chrome.windows.remove) {
+      chrome.windows.remove(activePopupWindowId).catch(() => {});
+      activePopupWindowId = null;
+    }
+    if (chrome.tabs && chrome.tabs.query) {
+      chrome.tabs.query({}, (tabs) => {
+        if (!tabs || !Array.isArray(tabs)) return;
+        for (const t of tabs) {
+          if (t && t.id) {
+            chrome.tabs.sendMessage(t.id, { action: "SIDEPANEL_STATE_CHANGED", isOpen: false }).catch(() => {});
+          }
+        }
+      });
+    }
+    sendResponse({ success: true, closed: true });
+    return false;
+  }
+  if (action === "FORWARD_SHORTCUT_TO_SIDEPANEL") {
+    chrome.runtime.sendMessage({
+      action: "FORWARD_SHORTCUT_TO_SIDEPANEL",
+      command: message.command,
+      key: message.key,
+      code: message.code
+    }).catch(() => {});
+    sendResponse({ success: true, forwarded: true });
+    return false;
+  }
 
   // 1. Health check to local backend
   if (action === "CHECK_HEALTH") {
@@ -346,11 +925,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const results = await chrome.scripting.executeScript({
           target: { tabId },
           world: "ISOLATED",
-          func: (payload) => {
+          func: async (payload) => {
             const exec = window.QuizZyExecutor || window.__QuizZyExecutor;
             if (exec && (typeof exec.executeQuizAction === "function" || typeof exec.executeAction === "function")) {
               const fn = exec.executeQuizAction || exec.executeAction;
-              return fn.call(exec, payload);
+              return await fn.call(exec, payload);
             }
             return { success: false, error: "QuizZyExecutor not loaded in tab." };
           },
@@ -405,6 +984,85 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // 7b. Click Skip Button
+  if (action === "CLICK_SKIP_BUTTON") {
+    resolveTargetTab(message, sender).then(async (targetTab) => {
+      if (!targetTab || !targetTab.id) {
+        sendResponse({ success: false, error: "No active tab found for Skip button click." });
+        return;
+      }
+      const tabId = targetTab.id;
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          world: "ISOLATED",
+          files: ["executor.js"]
+        });
+
+        const results = await chrome.scripting.executeScript({
+          target: { tabId },
+          world: "ISOLATED",
+          func: async (customSkipSelector) => {
+            const exec = window.QuizZyExecutor || window.__QuizZyExecutor;
+            if (exec && typeof exec.clickSkipButton === "function") {
+              return await exec.clickSkipButton(customSkipSelector);
+            }
+            return { success: false, error: "QuizZyExecutor not loaded in tab." };
+          },
+          args: [message.customSkipSelector || ""]
+        });
+
+        sendResponse(results && results[0] ? results[0].result : { success: false, error: "Empty skip button result." });
+      } catch (err) {
+        sendResponse({ success: false, error: `Skip button click error: ${err.message}` });
+      }
+    }).catch((err) => {
+      sendResponse({ success: false, error: err.message });
+    });
+    return true;
+  }
+
+  // 7c. Swipe or Advance Question (Resilient skip / next / carousel gesture)
+  if (action === "SWIPE_OR_ADVANCE") {
+    resolveTargetTab(message, sender).then(async (targetTab) => {
+      if (!targetTab || !targetTab.id) {
+        sendResponse({ success: false, error: "No active tab found for swipe / advance." });
+        return;
+      }
+      const tabId = targetTab.id;
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          world: "ISOLATED",
+          files: ["executor.js"]
+        });
+
+        const results = await chrome.scripting.executeScript({
+          target: { tabId },
+          world: "ISOLATED",
+          func: async (customSelector) => {
+            const exec = window.QuizZyExecutor || window.__QuizZyExecutor;
+            if (exec && typeof exec.swipeOrAdvanceQuestion === "function") {
+              return await exec.swipeOrAdvanceQuestion(customSelector);
+            }
+            if (exec && typeof exec.clickSkipButton === "function") {
+              return await exec.clickSkipButton(customSelector);
+            }
+            return { success: false, error: "QuizZyExecutor not loaded in tab." };
+          },
+          args: [message.customSelector || ""]
+        });
+
+        sendResponse(results && results[0] ? results[0].result : { success: false, error: "Empty swipe/advance result." });
+      } catch (err) {
+        sendResponse({ success: false, error: `Swipe / advance error: ${err.message}` });
+      }
+    }).catch((err) => {
+      sendResponse({ success: false, error: err.message });
+    });
+    return true;
+  }
+
   // 8. Submit Wrong-Answer Feedback & Overrides
   if (action === "SUBMIT_FEEDBACK") {
     fetch(`${BACKEND_BASE_URL}/feedback`, {
@@ -432,7 +1090,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   // 9. Toggle / Launch Floating HUD on Active Quiz Tab
-  if (action === "TOGGLE_FLOATING_HUD") {
+  if (action === "TOGGLE_FLOATING_HUD" || action === "LAUNCH_FLOATING_HUD" || action === "SHOW_FLOATING_HUD" || action === "INJECT_FLOATING_HUD") {
     resolveTargetTab(message, sender).then(async (targetTab) => {
       if (!targetTab || !targetTab.id) {
         sendResponse({ success: false, error: "No active tab found." });
@@ -448,7 +1106,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
 
       try {
-        const hudRes = await injectAndToggleFloatingHud(targetTab.id);
+        const isExplicitShowOrLaunch = (action === "LAUNCH_FLOATING_HUD" || action === "SHOW_FLOATING_HUD");
+        const shouldToggle = isExplicitShowOrLaunch ? false : (message && message.shouldToggle !== false);
+        const autoShow = isExplicitShowOrLaunch ? true : (action !== "INJECT_FLOATING_HUD");
+        const hudRes = await injectAndToggleFloatingHud(targetTab.id, shouldToggle, autoShow);
+
+        if (hudRes && hudRes.codingMode && (action === "LAUNCH_FLOATING_HUD" || action === "SHOW_FLOATING_HUD" || (message && message.forcePopup))) {
+          await handleOpenPopupHud({ force: true }, targetTab);
+        }
+
         sendResponse({ success: true, result: hudRes });
       } catch (err) {
         sendResponse({ success: false, error: `HUD injection error: ${err.message}` });
@@ -459,5 +1125,1581 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // asynchronous response
   }
 
+  // 10. Open Out-of-Page Popup HUD (Guarded to prevent automatic unwanted popup windows)
+  if (action === "OPEN_POPUP_HUD") {
+    // If auto-triggered or not an explicit manual command with force flag, suppress popup creation
+    if (!message || message.autoTriggered || message.auto || !message.force) {
+      sendResponse({ success: true, suppressed: true, message: "Auto-popup suppressed" });
+      return false;
+    }
+    const popupUrl = chrome.runtime.getURL("sidepanel.html?mode=popup");
+    if (chrome.windows && chrome.windows.create) {
+      if (activePopupWindowId && chrome.windows.get) {
+        chrome.windows.get(activePopupWindowId, (existingWin) => {
+          if (chrome.runtime.lastError || !existingWin) {
+            chrome.windows.create({
+              url: popupUrl,
+              type: "popup",
+              width: 420,
+              height: 640,
+              focused: true
+            }, (win) => {
+              activePopupWindowId = win ? win.id : null;
+              sendResponse({ success: true, windowId: activePopupWindowId });
+            });
+          } else {
+            if (chrome.windows.update) {
+              chrome.windows.update(activePopupWindowId, { focused: true }, () => {
+                sendResponse({ success: true, windowId: activePopupWindowId, existing: true });
+              });
+            } else {
+              sendResponse({ success: true, windowId: activePopupWindowId, existing: true });
+            }
+          }
+        });
+      } else {
+        chrome.windows.create({
+          url: popupUrl,
+          type: "popup",
+          width: 420,
+          height: 640,
+          focused: true
+        }, (win) => {
+          activePopupWindowId = win ? win.id : null;
+          sendResponse({ success: true, windowId: activePopupWindowId });
+        });
+      }
+    } else {
+      sendResponse({ success: false, error: "chrome.windows.create not available" });
+    }
+    return true;
+  }
+
+  // 11. Zero-Tag MAIN World Bridge: Read Full Starter Code & Language from Monaco/Ace
+  if (action === "READ_CODE_EDITOR_MAIN") {
+    resolveTargetTab(message, sender).then(async (targetTab) => {
+      if (!targetTab || !targetTab.id) {
+        sendResponse({ success: false, error: "No target tab found." });
+        return;
+      }
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: targetTab.id },
+          world: "MAIN",
+          func: readCodeFromMainWorld
+        });
+
+        const res = results && results[0] ? results[0].result : { success: false, error: "No result" };
+        sendResponse(res);
+      } catch (err) {
+        sendResponse({ success: false, error: err.message });
+      }
+    }).catch((err) => {
+      sendResponse({ success: false, error: err.message });
+    });
+    return true;
+  }
+
+  // 12. Zero-Tag MAIN World Bridge: Write Solved Code cleanly to Monaco/Ace Model via Paste-Bypass Human Typing Engine
+  if (action === "WRITE_CODE_EDITOR_MAIN" || action === "WRITE_CODE_HUMAN_TYPING_MAIN") {
+    resolveTargetTab(message, sender).then(async (targetTab) => {
+      if (!targetTab || !targetTab.id) {
+        sendResponse({ success: false, error: "No target tab found." });
+        return;
+      }
+      const payload = message.payload || {
+        code: message.code,
+        preserveBoilerplate: message.preserveBoilerplate !== false,
+        language: message.language,
+        starter_code: message.starter_code
+      };
+      if (typeof payload.code !== "string" && typeof message.code === "string") {
+        payload.code = message.code;
+      }
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: targetTab.id },
+          world: "MAIN",
+          func: writeCodeWithHumanTypingInMainWorld,
+          args: [payload]
+        });
+
+        sendResponse(results && results[0] ? results[0].result : { success: false, error: "No result" });
+      } catch (err) {
+        sendResponse({ success: false, error: err.message });
+      }
+    }).catch((err) => {
+      sendResponse({ success: false, error: err.message });
+    });
+    return true;
+  }
+
+  // 13. Zero-Tag MAIN World Bridge: React DnD / Fiber Ordering Execution
+  if (action === "EXECUTE_REACT_ORDER_MAIN") {
+    resolveTargetTab(message, sender).then(async (targetTab) => {
+      if (!targetTab || !targetTab.id) {
+        sendResponse({ success: false, error: "No target tab found." });
+        return;
+      }
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: targetTab.id },
+          world: "MAIN",
+          func: reorderReactListInMainWorld,
+          args: [message.payload || {}]
+        });
+
+        sendResponse(results && results[0] ? results[0].result : { success: false, error: "No result" });
+      } catch (err) {
+        sendResponse({ success: false, error: err.message });
+      }
+    }).catch((err) => {
+      sendResponse({ success: false, error: err.message });
+    });
+    return true;
+  }
+
+
+  // 14b. Get Current Coding Automation State
+  if (action === "GET_CODING_AUTOMATION_STATE") {
+    resolveTargetTab(message, sender).then(async (targetTab) => {
+      if (!targetTab || !targetTab.id) {
+        sendResponse({ success: false, state: "IDLE", error: "No target tab found." });
+        return;
+      }
+      try {
+        const stateRes = await chrome.scripting.executeScript({
+          target: { tabId: targetTab.id },
+          world: "ISOLATED",
+          func: () => {
+            if (typeof window.QuizZyExecutor !== "undefined" && typeof window.QuizZyExecutor.getCodingAutomationState === "function") {
+              return window.QuizZyExecutor.getCodingAutomationState();
+            }
+            return "IDLE";
+          }
+        });
+        const st = stateRes && stateRes[0] ? stateRes[0].result : "IDLE";
+        sendResponse({ success: true, state: st });
+      } catch (err) {
+        sendResponse({ success: false, state: "IDLE", error: err.message });
+      }
+    }).catch((err) => {
+      sendResponse({ success: false, state: "IDLE", error: err.message });
+    });
+    return true;
+  }
+
+  // 14c. Trigger Unified Solve & Self-Healing Coding Loop (Alt+S / UI Solve in Coding Mode)
+  if (action === "TRIGGER_SOLVE" || action === "TRIGGER_CODING_SOLVE_AND_APPLY" || action === "START_CODING_AUTOMATION") {
+    resolveTargetTab(message, sender).then(async (targetTab) => {
+      const res = await handleTriggerSolve(message, targetTab);
+      sendResponse(res);
+    }).catch((err) => {
+      sendResponse({ success: false, error: err.message });
+    });
+    return true;
+  }
+
+  // 15. Trigger Apply (Alt+A)
+  if (action === "TRIGGER_APPLY" || action === "TRIGGER_CODING_APPLY_ONLY") {
+    resolveTargetTab(message, sender).then(async (targetTab) => {
+      const res = await handleTriggerApply(message, targetTab);
+      sendResponse(res);
+    }).catch((err) => {
+      sendResponse({ success: false, error: err.message });
+    });
+    return true;
+  }
+
+  // 16. Trigger Auto Loop (Alt+N / Double-Tap Shift)
+  if (action === "TRIGGER_CODING_AUTO_LOOP") {
+    resolveTargetTab(message, sender).then(async (targetTab) => {
+      const res = await handleTriggerAutoLoop(message, targetTab);
+      sendResponse(res);
+    }).catch((err) => {
+      sendResponse({ success: false, error: err.message });
+    });
+    return true;
+  }
+
   return false;
 });
+
+// MAIN-world React Fiber DnD reordering implementation (zero script tags injected)
+function reorderReactListInMainWorld(payload) {
+  if (!payload || !Array.isArray(payload.ordered_texts) || payload.ordered_texts.length < 2) {
+    return { success: false, error: "Invalid payload or ordered_texts" };
+  }
+
+  const targetTexts = payload.ordered_texts;
+  const N = targetTexts.length;
+
+  function cleanStr(s) {
+    if (!s) return "";
+    return String(s)
+      .replace(/^[\u2800-\u28FF\u22EE\u22EF\u22F0\u22F1\u2630\uFE19::⋮⠿]+\s*/, "")
+      .replace(/^[1-8](?:[\.\)\:\-\s]+|\s+)(?=[A-Za-z`"'\<\(])/, "")
+      .replace(/^[1-8]$/, "")
+      .replace(/^\(\s*([A-Fa-f0-9]{1,2})\s*\)\s+/, "")
+      .replace(/^\[\s*([A-Fa-f0-9]{1,2})\s*\]\s+/, "")
+      .replace(/^[A-Fa-f][\.\)\:]\s+/, "")
+      .replace(/^[0-9]{1,2}[\.\)]\s+/, "")
+      .replace(/[\u200B-\u200D\uFEFF]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  }
+
+  // 1. Locate live option row elements in DOM
+  let rows = [];
+  if (Array.isArray(payload.optionSelectors) && payload.optionSelectors.length > 0) {
+    for (const sel of payload.optionSelectors) {
+      try {
+        const el = document.querySelector(sel);
+        if (el && !rows.includes(el)) rows.push(el);
+      } catch (_) {}
+    }
+  }
+
+  if (rows.length !== N) {
+    const selectors = [
+      "[data-rbd-draggable-id]",
+      "[data-rfd-draggable-id]",
+      "[draggable='true']",
+      ".draggable-item",
+      ".sortable-item",
+      ".order-item",
+      "[aria-roledescription*='sortable' i]"
+    ];
+    for (const sel of selectors) {
+      try {
+        const matched = Array.from(document.querySelectorAll(sel));
+        if (matched.length >= N) {
+          rows = matched.slice(0, N);
+          break;
+        }
+      } catch (_) {}
+    }
+  }
+
+  if (rows.length === 0) {
+    const allDivs = Array.from(document.querySelectorAll("div, li, tr"));
+    const matchingDivs = allDivs.filter((el) => {
+      const t = cleanStr(el.innerText || el.textContent || "");
+      return targetTexts.some((tgt) => cleanStr(tgt) === t);
+    });
+    const uniqueMatches = [];
+    for (const el of matchingDivs) {
+      const t = cleanStr(el.innerText || el.textContent || "");
+      if (!uniqueMatches.some((u) => cleanStr(u.innerText || u.textContent || "") === t)) {
+        uniqueMatches.push(el);
+      }
+    }
+    if (uniqueMatches.length === N) {
+      rows = uniqueMatches;
+    }
+  }
+
+  if (rows.length < 2) {
+    return { success: false, error: "Could not locate live order row elements in MAIN world" };
+  }
+
+  function getFiber(el) {
+    if (!el) return null;
+    const key = Object.keys(el).find(k => k.startsWith("__reactFiber$") || k.startsWith("__reactInternalInstance$"));
+    return key ? el[key] : null;
+  }
+
+  // Check if already in order
+  const currentTexts = rows.map(r => cleanStr(r.innerText || r.textContent || ""));
+  const targetClean = targetTexts.map(cleanStr);
+  const isAlreadyMatch = currentTexts.length === N && currentTexts.every((t, i) => t === targetClean[i] || t.includes(targetClean[i]) || targetClean[i].includes(t));
+  if (isAlreadyMatch) {
+    return { success: true, already_matched: true, method: "already_correct" };
+  }
+
+  const targetOrderIndices = [];
+  for (let j = 0; j < N; j++) {
+    const tgt = targetClean[j];
+    let foundIdx = rows.findIndex(r => {
+      const ct = cleanStr(r.innerText || r.textContent || "");
+      return ct === tgt || ct.includes(tgt) || tgt.includes(ct);
+    });
+    if (foundIdx === -1) foundIdx = j;
+    targetOrderIndices.push(foundIdx);
+  }
+
+  let fiberCandidate = null;
+  for (const r of rows) {
+    const f = getFiber(r);
+    if (f) {
+      fiberCandidate = f;
+      break;
+    }
+  }
+  if (!fiberCandidate && rows[0] && rows[0].parentElement) {
+    fiberCandidate = getFiber(rows[0].parentElement);
+  }
+
+  if (!fiberCandidate) {
+    return { success: false, error: "No React Fiber found on order elements" };
+  }
+
+  // Walk up Fiber tree
+  let curr = fiberCandidate;
+  let depth = 0;
+  while (curr && depth < 35) {
+    const props = curr.memoizedProps;
+    if (props) {
+      // PATH 1A.1 react-sortable-hoc onSortEnd
+      if (typeof props.onSortEnd === "function") {
+        try {
+          let simulatedList = rows.map((_, idx) => idx);
+          for (let targetPos = 0; targetPos < N; targetPos++) {
+            const desiredRowOriginalIdx = targetOrderIndices[targetPos];
+            const currentPos = simulatedList.indexOf(desiredRowOriginalIdx);
+            if (currentPos !== -1 && currentPos !== targetPos) {
+              props.onSortEnd({
+                oldIndex: currentPos,
+                newIndex: targetPos,
+                collection: 0,
+                isKeySorting: false
+              });
+              const [moved] = simulatedList.splice(currentPos, 1);
+              simulatedList.splice(targetPos, 0, moved);
+            }
+          }
+          return { success: true, method: "react_sortable_hoc_onSortEnd" };
+        } catch (err) {
+          console.warn("[QuizZy] onSortEnd invocation error:", err);
+        }
+      }
+
+      // PATH 1A.2 react-beautiful-dnd / @hello-pangea/dnd / @dnd-kit onDragEnd
+      if (typeof props.onDragEnd === "function") {
+        try {
+          let droppableId = "droppable";
+          const dropEl = document.querySelector("[data-rbd-droppable-id], [data-rfd-droppable-id]");
+          if (dropEl) {
+            droppableId = dropEl.getAttribute("data-rbd-droppable-id") || dropEl.getAttribute("data-rfd-droppable-id") || droppableId;
+          }
+
+          const draggableIds = rows.map((r, idx) => {
+            return (r.getAttribute && (r.getAttribute("data-rbd-draggable-id") || r.getAttribute("data-rfd-draggable-id") || r.getAttribute("data-id") || r.getAttribute("id"))) || `item-${idx}`;
+          });
+
+          let simulatedList = rows.map((_, idx) => idx);
+          for (let targetPos = 0; targetPos < N; targetPos++) {
+            const desiredRowOriginalIdx = targetOrderIndices[targetPos];
+            const currentPos = simulatedList.indexOf(desiredRowOriginalIdx);
+            if (currentPos !== -1 && currentPos !== targetPos) {
+              const activeDraggableId = draggableIds[desiredRowOriginalIdx];
+              props.onDragEnd({
+                draggableId: activeDraggableId,
+                type: "DEFAULT",
+                source: { index: currentPos, droppableId },
+                destination: { index: targetPos, droppableId },
+                reason: "DROP",
+                mode: "FLUID"
+              });
+              try {
+                props.onDragEnd({
+                  active: { id: activeDraggableId, data: { current: { sortable: { index: currentPos } } } },
+                  over: { id: draggableIds[simulatedList[targetPos]], data: { current: { sortable: { index: targetPos } } } }
+                });
+              } catch (_) {}
+
+              const [moved] = simulatedList.splice(currentPos, 1);
+              simulatedList.splice(targetPos, 0, moved);
+            }
+          }
+          return { success: true, method: "react_rbd_onDragEnd" };
+        } catch (err) {
+          console.warn("[QuizZy] onDragEnd invocation error:", err);
+        }
+      }
+    }
+
+    // PATH 1B.1 Class Component setState
+    if (curr.stateNode && curr.stateNode.state && typeof curr.stateNode.setState === "function") {
+      const stateObj = curr.stateNode.state;
+      for (const k of Object.keys(stateObj)) {
+        const val = stateObj[k];
+        if (Array.isArray(val) && val.length === N) {
+          const reordered = new Array(N);
+          let matchedAll = true;
+          for (let targetPos = 0; targetPos < N; targetPos++) {
+            const origIdx = targetOrderIndices[targetPos];
+            if (val[origIdx] !== undefined) {
+              reordered[targetPos] = val[origIdx];
+            } else {
+              matchedAll = false;
+            }
+          }
+          if (matchedAll) {
+            try {
+              curr.stateNode.setState({ [k]: reordered });
+              return { success: true, method: "react_class_setState", stateKey: k };
+            } catch (err) {
+              console.warn("[QuizZy] setState error:", err);
+            }
+          }
+        }
+      }
+    }
+
+    // PATH 1B.2 Function Component Hook useState
+    if (curr.memoizedState) {
+      let hook = curr.memoizedState;
+      let hookIdx = 0;
+      while (hook && hookIdx < 20) {
+        const stateVal = hook.memoizedState || hook.baseState;
+        if (Array.isArray(stateVal) && stateVal.length === N) {
+          if (hook.queue && typeof hook.queue.dispatch === "function") {
+            const reordered = new Array(N);
+            let matchedAll = true;
+            for (let targetPos = 0; targetPos < N; targetPos++) {
+              const origIdx = targetOrderIndices[targetPos];
+              if (stateVal[origIdx] !== undefined) {
+                reordered[targetPos] = stateVal[origIdx];
+              } else {
+                matchedAll = false;
+              }
+            }
+            if (matchedAll) {
+              try {
+                hook.queue.dispatch(reordered);
+                return { success: true, method: "react_hook_dispatch" };
+              } catch (err) {
+                console.warn("[QuizZy] hook dispatch error:", err);
+              }
+            }
+          }
+        }
+        hook = hook.next;
+        hookIdx++;
+      }
+    }
+
+    curr = curr.return;
+    depth++;
+  }
+
+  return { success: false, error: "React Fiber tree walked but no suitable dnd handlers or state arrays found" };
+}
+
+// ==========================================================================
+// MAIN-World Editor Discovery & Multi-Layer Non-Paste Code Engine
+// ==========================================================================
+
+// Zero-Tag MAIN World Bridge: Read Full Starter Code & Language from Monaco/Ace/CodeMirror
+function readCodeFromMainWorld() {
+  const win = typeof window !== "undefined" ? window : null;
+  const doc = typeof document !== "undefined" ? document : null;
+  if (!doc) return { success: false, code: "", language: "", error: "No document available" };
+
+  let code = "";
+  let language = "";
+  let editorType = "none";
+
+  // Helper: Validate candidate object for editor or model capabilities
+  function checkCandidate(cand) {
+    if (!cand || typeof cand !== "object") return null;
+    if (cand.current && typeof cand.current === "object") {
+      const fromCur = checkCandidate(cand.current);
+      if (fromCur) return fromCur;
+    }
+    if (typeof cand.getValue === "function" && (typeof cand.setValue === "function" || cand.session)) {
+      return { instance: cand, type: "ace" };
+    }
+    if (typeof cand.executeEdits === "function" || (typeof cand.getModel === "function" && typeof cand.getValue === "function")) {
+      return { instance: cand, type: "monaco" };
+    }
+    if (typeof cand.getValue === "function" && (typeof cand.pushEditOperations === "function" || typeof cand.applyEdits === "function" || typeof cand.getFullModelRange === "function")) {
+      return { instance: cand, type: "monaco_model" };
+    }
+    if (cand.state && cand.state.doc && typeof cand.dispatch === "function") {
+      return { instance: cand, type: "codemirror6" };
+    }
+    if (typeof cand.getValue === "function" && typeof cand.setValue === "function" && cand.getDoc) {
+      return { instance: cand, type: "codemirror5" };
+    }
+    return null;
+  }
+
+  // Helper: Deep React Fiber scan with ancestor traversal and hook unwrap
+  function scanReactFiber(domNode) {
+    if (!domNode) return null;
+    let node = domNode;
+    let hops = 0;
+    while (node && hops < 15) {
+      const keys = Object.keys(node);
+      const fiberKey = keys.find(k => k.startsWith("__reactFiber$") || k.startsWith("__reactInternalInstance$") || k.startsWith("__reactContainer$"));
+      if (fiberKey && node[fiberKey]) {
+        let cur = node[fiberKey];
+        let fiberHops = 0;
+        while (cur && fiberHops < 25) {
+          const props = cur.memoizedProps || cur.pendingProps;
+          const candidates = [
+            cur.stateNode,
+            props && props.editor,
+            props && props.monaco,
+            props && props.ace,
+            cur.stateNode && cur.stateNode.editor,
+            cur.stateNode && cur.stateNode.ace,
+            cur.stateNode && cur.stateNode.monaco,
+            cur.stateNode && cur.stateNode.instance,
+            cur.stateNode && cur.stateNode._editor
+          ];
+
+          for (const cand of candidates) {
+            const res = checkCandidate(cand);
+            if (res) return res;
+          }
+
+          if (cur.memoizedState && typeof cur.memoizedState === "object") {
+            let hook = cur.memoizedState;
+            let hookHops = 0;
+            while (hook && hookHops < 35) {
+              if (hook.memoizedState) {
+                const res = checkCandidate(hook.memoizedState);
+                if (res) return res;
+              }
+              if (hook.baseState) {
+                const res = checkCandidate(hook.baseState);
+                if (res) return res;
+              }
+              hook = hook.next;
+              hookHops++;
+            }
+          }
+
+          cur = cur.return;
+          fiberHops++;
+        }
+      }
+      node = node.parentElement;
+      hops++;
+    }
+    return null;
+  }
+
+  // Helper: Resolve AMD / RequireJS Monaco
+  function resolveAmdMonaco() {
+    if (!win) return null;
+    if (win.monaco && win.monaco.editor) return win.monaco;
+    if (typeof win.require === "function") {
+      try {
+        const reqM = win.require("vs/editor/editor.main");
+        if (reqM && reqM.editor) return reqM;
+      } catch (_) {}
+      if (win.require.s && win.require.s.contexts && win.require.s.contexts._) {
+        try {
+          const def = win.require.s.contexts._.defined;
+          if (def && def["vs/editor/editor.main"]) return def["vs/editor/editor.main"];
+        } catch (_) {}
+      }
+    }
+    return null;
+  }
+
+  function findMainEditorElement(docRoot) {
+    if (!docRoot || typeof docRoot.querySelectorAll !== "function") return null;
+    const selectors = [
+      ".monaco-editor",
+      "[class*='monaco-editor']",
+      ".ace_editor",
+      "[class*='ace_editor']",
+      ".cm-editor",
+      ".CodeMirror"
+    ];
+    const all = Array.from(docRoot.querySelectorAll(selectors.join(", ")));
+    if (all.length === 0) return null;
+    if (all.length === 1) return all[0];
+
+    const filtered = all.filter(el => {
+      if (!el || typeof el.closest !== "function") return true;
+      return !el.closest(".question-description, .problem-statement, .problem-description, [class*='description'], [class*='instructions'], .testcase-output, [class*='console'], [class*='output']");
+    });
+    const pool = filtered.length > 0 ? filtered : all;
+
+    let best = null;
+    let maxArea = -1;
+    for (const el of pool) {
+      const rect = (typeof el.getBoundingClientRect === "function") ? el.getBoundingClientRect() : null;
+      const w = rect ? rect.width : (el.offsetWidth || el.clientWidth || 0);
+      const h = rect ? rect.height : (el.offsetHeight || el.clientHeight || 0);
+      if (pool.length > 1 && (w < 100 || h < 100)) continue;
+      const area = w * h;
+      if (area > maxArea) {
+        maxArea = area;
+        best = el;
+      }
+    }
+    return best || pool[0];
+  }
+
+  // 1. Monaco Editor (Direct API, Models & AMD)
+  try {
+    const activeMonaco = resolveAmdMonaco() || (win && win.monaco);
+    if (activeMonaco && activeMonaco.editor) {
+      if (typeof activeMonaco.editor.getEditors === "function") {
+        const eds = activeMonaco.editor.getEditors();
+        if (Array.isArray(eds) && eds.length > 0) {
+          const mainEl = findMainEditorElement(doc);
+          const nonReadOnly = eds.filter(e => {
+            if (!e) return false;
+            let isReadOnly = false;
+            if (typeof e.getOption === "function" && activeMonaco.editor && activeMonaco.editor.EditorOption) {
+              try { isReadOnly = e.getOption(activeMonaco.editor.EditorOption.readOnly) === true; } catch (_) {}
+            }
+            if (!isReadOnly && typeof e.getRawOptions === "function") {
+              try { isReadOnly = (e.getRawOptions() || {}).readOnly === true; } catch (_) {}
+            }
+            if (isReadOnly) return false;
+
+            const dn = (typeof e.getDomNode === "function") ? e.getDomNode() : null;
+            if (dn) {
+              if (typeof dn.closest === "function" && dn.closest(".question-description, .problem-statement, .problem-description, [class*='description'], [class*='instructions'], .testcase-output, [class*='console'], [class*='output']")) {
+                return false;
+              }
+              const rect = (typeof dn.getBoundingClientRect === "function") ? dn.getBoundingClientRect() : null;
+              const w = rect ? rect.width : (dn.offsetWidth || 0);
+              const h = rect ? rect.height : (dn.offsetHeight || 0);
+              if (eds.length > 1 && (w < 100 || h < 100)) return false;
+            }
+            return true;
+          });
+
+          const pool = nonReadOnly.length > 0 ? nonReadOnly : eds;
+          let matched = mainEl ? pool.find(e => {
+            const dn = (typeof e.getDomNode === "function") ? e.getDomNode() : null;
+            return dn && (dn === mainEl || dn.contains(mainEl) || mainEl.contains(dn));
+          }) : null;
+
+          if (!matched) {
+            let maxArea = -1;
+            let bestEd = pool[0];
+            for (const ed of pool) {
+              const dn = typeof ed.getDomNode === "function" ? ed.getDomNode() : null;
+              if (dn) {
+                const rect = (typeof dn.getBoundingClientRect === "function") ? dn.getBoundingClientRect() : null;
+                const w = rect ? rect.width : (dn.offsetWidth || 0);
+                const h = rect ? rect.height : (dn.offsetHeight || 0);
+                const area = w * h;
+                if (area > maxArea) {
+                  maxArea = area;
+                  bestEd = ed;
+                }
+              }
+            }
+            matched = bestEd;
+          }
+
+          if (matched && typeof matched.getModel === "function") {
+            const m = matched.getModel();
+            if (m && typeof m.getValue === "function") {
+              code = m.getValue();
+              language = typeof m.getLanguageId === "function" ? m.getLanguageId() : "";
+              editorType = "monaco";
+            }
+          }
+        }
+      }
+      if (!code && typeof activeMonaco.editor.getModels === "function") {
+        const models = (typeof window !== "undefined" && window.monaco && window.monaco.editor && typeof window.monaco.editor.getModels === "function") ? window.monaco.editor.getModels() : activeMonaco.editor.getModels();
+        if (Array.isArray(models) && models.length > 0) {
+          if (models.length === 1) {
+            const m = models[0];
+            code = typeof m.getValue === "function" ? m.getValue() : "";
+            language = typeof m.getLanguageId === "function" ? m.getLanguageId() : "";
+            editorType = "monaco_model";
+          } else {
+            const templateSignatures = [/#include/i, /\bclass\s+Solution\b/i, /\bdef\s+/i, /\bfunction\s+/i, /\bpublic\s+class\b/i];
+            let targetM = null;
+            for (let i = models.length - 1; i >= 0; i--) {
+              const m = models[i];
+              const val = (m && typeof m.getValue === "function") ? m.getValue() : "";
+              if (templateSignatures.some(sig => sig.test(val))) {
+                targetM = m;
+                break;
+              }
+            }
+            if (!targetM) {
+              const attached = models.filter(m => typeof m.isAttachedToEditor === "function" && m.isAttachedToEditor());
+              targetM = attached.length > 0 ? attached[attached.length - 1] : models[models.length - 1];
+            }
+            if (targetM) {
+              code = typeof targetM.getValue === "function" ? targetM.getValue() : "";
+              language = typeof targetM.getLanguageId === "function" ? targetM.getLanguageId() : "";
+              editorType = "monaco_model";
+            }
+          }
+        }
+      }
+    }
+  } catch (_) {}
+
+  // 2. Ace Editor (Direct API & DOM Expando)
+  if (!code) {
+    try {
+      const aceEl = doc.querySelector(".ace_editor, [class*='ace_editor']");
+      if (aceEl) {
+        let ed = null;
+        if (aceEl.env && aceEl.env.editor) {
+          ed = aceEl.env.editor;
+        } else if (aceEl.editor || aceEl.__ace_editor__) {
+          ed = aceEl.editor || aceEl.__ace_editor__;
+        } else if (win && win.ace && typeof win.ace.edit === "function") {
+          ed = window.ace.edit(aceEl);
+        }
+        if (!ed) {
+          let curEl = aceEl;
+          let elHops = 0;
+          while (curEl && elHops < 10) {
+            if (curEl.editor || curEl.__ace_editor__ || curEl._editor) {
+              const cand = curEl.editor || curEl.__ace_editor__ || curEl._editor;
+              if (cand && typeof cand.getValue === "function" && cand.session) {
+                ed = cand;
+                break;
+              }
+            }
+            curEl = curEl.parentElement;
+            elHops++;
+          }
+        }
+        if (ed && typeof ed.getValue === "function") {
+          code = ed.getValue();
+          editorType = "ace";
+          try { language = ed.session.getMode().$id.split("/").pop(); } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 3. React Fiber Traversal for Monaco or Ace
+  if (!code) {
+    const editorContainer = doc.querySelector(".monaco-editor, .ace_editor, .code-editor-container, [class*='monaco-editor'], [class*='ace_editor']");
+    if (editorContainer) {
+      const fiberRes = scanReactFiber(editorContainer);
+      if (fiberRes && fiberRes.instance) {
+        if (typeof fiberRes.instance.getValue === "function") {
+          code = fiberRes.instance.getValue();
+          editorType = fiberRes.type || "react-fiber-editor";
+        } else if (typeof fiberRes.instance.getModel === "function") {
+          const m = fiberRes.instance.getModel();
+          if (m && typeof m.getValue === "function") {
+            code = m.getValue();
+            editorType = "monaco";
+          }
+        }
+      }
+    }
+  }
+
+  // 4. Same-origin iframes check
+  if (!code && doc.querySelectorAll) {
+    try {
+      const iframes = Array.from(doc.querySelectorAll("iframe"));
+      for (const ifr of iframes) {
+        try {
+          const ifrDoc = ifr.contentDocument || (ifr.contentWindow && ifr.contentWindow.document);
+          if (ifrDoc) {
+            const ifrEditor = ifrDoc.querySelector(".monaco-editor, .ace_editor");
+            if (ifrEditor) {
+              const ifrFiber = scanReactFiber(ifrEditor);
+              if (ifrFiber && ifrFiber.instance && typeof ifrFiber.instance.getValue === "function") {
+                code = ifrFiber.instance.getValue();
+                editorType = ifrFiber.type || "iframe-editor";
+                break;
+              }
+            }
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  // 5. CodeMirror 5 / 6
+  if (!code) {
+    const cmEl = doc.querySelector(".CodeMirror, .cm-editor");
+    if (cmEl) {
+      if (cmEl.CodeMirror && typeof cmEl.CodeMirror.getValue === "function") {
+        code = cmEl.CodeMirror.getValue();
+        editorType = "codemirror";
+      } else if (cmEl.cmView && cmEl.cmView.view && cmEl.cmView.view.state && cmEl.cmView.view.state.doc) {
+        code = cmEl.cmView.view.state.doc.toString();
+        editorType = "codemirror6";
+      }
+    }
+  }
+
+  // 6. Safe standalone textarea fallback (strictly excluding hidden editor textareas)
+  if (!code) {
+    const textareas = Array.from(doc.querySelectorAll("textarea"));
+    for (const ta of textareas) {
+      if (ta.matches && ta.matches(".ace_text-input, textarea.inputarea, .monaco-mouse-cursor-text")) continue;
+      if (ta.closest && ta.closest(".ace_editor, .monaco-editor, .CodeMirror, .cm-editor")) continue;
+      if (ta.value && ta.value.trim().length > 0) {
+        code = ta.value;
+        editorType = "textarea";
+        break;
+      }
+    }
+  }
+
+  return {
+    success: true,
+    code: code || "",
+    language: language || "",
+    editorType: editorType
+  };
+}
+
+// MAIN-world Monaco/Ace paste-bypass human typing implementation (zero paste events dispatched)
+function writeCodeWithHumanTypingInMainWorld(payload) {
+  if (!payload) return { success: false, error: "Empty payload" };
+  let targetCode = (typeof payload.code === "string")
+    ? payload.code
+    : (typeof payload.answer === "string" ? payload.answer : (typeof payload.selected_text === "string" ? payload.selected_text : ""));
+  if (typeof targetCode !== "string") return { success: false, error: "No code provided in payload" };
+
+  // Strip leading and trailing markdown code fences if present
+  targetCode = targetCode.replace(/^```[a-zA-Z0-9_+\-#]*\s*\n?/, "").replace(/\n?```\s*$/, "").trim();
+
+  const doc = (typeof document !== "undefined") ? document : null;
+  const win = (typeof window !== "undefined") ? window : null;
+  if (!doc) return { success: false, error: "No document available" };
+
+  // Helper: Validate candidate object for editor or model capabilities
+  function checkCandidate(cand) {
+    if (!cand || typeof cand !== "object") return null;
+    if (cand.current && typeof cand.current === "object") {
+      const fromCur = checkCandidate(cand.current);
+      if (fromCur) return fromCur;
+    }
+    if (typeof cand.getValue === "function" && (typeof cand.setValue === "function" || cand.session)) {
+      return { instance: cand, type: "ace" };
+    }
+    if (typeof cand.executeEdits === "function" || (typeof cand.getModel === "function" && typeof cand.getValue === "function")) {
+      return { instance: cand, type: "monaco" };
+    }
+    if (typeof cand.getValue === "function" && (typeof cand.pushEditOperations === "function" || typeof cand.applyEdits === "function" || typeof cand.getFullModelRange === "function")) {
+      return { instance: cand, type: "monaco_model" };
+    }
+    if (cand.state && cand.state.doc && typeof cand.dispatch === "function") {
+      return { instance: cand, type: "codemirror6" };
+    }
+    if (typeof cand.getValue === "function" && typeof cand.setValue === "function" && cand.getDoc) {
+      return { instance: cand, type: "codemirror5" };
+    }
+    return null;
+  }
+
+  // Helper: Deep React Fiber Scanner
+  function scanReactFiber(domNode) {
+    if (!domNode) return { editor: null, onChange: null };
+    let node = domNode;
+    let hops = 0;
+    while (node && hops < 15) {
+      const keys = Object.keys(node);
+      const fiberKey = keys.find(k => k.startsWith("__reactFiber$") || k.startsWith("__reactInternalInstance$") || k.startsWith("__reactContainer$"));
+      const propsKey = keys.find(k => k.startsWith("__reactProps$"));
+
+      let onChangeProp = null;
+      if (propsKey && node[propsKey] && typeof node[propsKey].onChange === "function") {
+        onChangeProp = node[propsKey].onChange;
+      }
+
+      if (fiberKey && node[fiberKey]) {
+        let cur = node[fiberKey];
+        let fiberHops = 0;
+        while (cur && fiberHops < 25) {
+          const props = cur.memoizedProps || cur.pendingProps;
+          if (props && typeof props.onChange === "function" && !onChangeProp) {
+            onChangeProp = props.onChange;
+          }
+
+          const candidates = [
+            cur.stateNode,
+            props && props.editor,
+            props && props.monaco,
+            props && props.ace,
+            cur.stateNode && cur.stateNode.editor,
+            cur.stateNode && cur.stateNode.ace,
+            cur.stateNode && cur.stateNode.monaco,
+            cur.stateNode && cur.stateNode.instance,
+            cur.stateNode && cur.stateNode._editor
+          ];
+
+          for (const cand of candidates) {
+            const res = checkCandidate(cand);
+            if (res) {
+              return { editor: res, onChange: onChangeProp };
+            }
+          }
+
+          if (cur.memoizedState && typeof cur.memoizedState === "object") {
+            let hook = cur.memoizedState;
+            let hookHops = 0;
+            while (hook && hookHops < 35) {
+              if (hook.memoizedState) {
+                const res = checkCandidate(hook.memoizedState);
+                if (res) return { editor: res, onChange: onChangeProp };
+              }
+              if (hook.baseState) {
+                const res = checkCandidate(hook.baseState);
+                if (res) return { editor: res, onChange: onChangeProp };
+              }
+              hook = hook.next;
+              hookHops++;
+            }
+          }
+
+          cur = cur.return;
+          fiberHops++;
+        }
+      }
+      node = node.parentElement;
+      hops++;
+    }
+
+    return { editor: null, onChange: null };
+  }
+
+  // Helper: Resolve AMD / RequireJS Monaco
+  function resolveAmdMonaco() {
+    if (!win) return null;
+    if (win.monaco && win.monaco.editor) return win.monaco;
+    if (typeof win.require === "function") {
+      try {
+        const reqM = win.require("vs/editor/editor.main");
+        if (reqM && reqM.editor) return reqM;
+      } catch (_) {}
+      if (win.require.s && win.require.s.contexts && win.require.s.contexts._) {
+        try {
+          const def = win.require.s.contexts._.defined;
+          if (def && def["vs/editor/editor.main"]) return def["vs/editor/editor.main"];
+        } catch (_) {}
+      }
+    }
+    return null;
+  }
+
+  function findMainEditorElement(docRoot) {
+    if (!docRoot || typeof docRoot.querySelectorAll !== "function") return null;
+    const selectors = [
+      ".monaco-editor",
+      "[class*='monaco-editor']",
+      ".ace_editor",
+      "[class*='ace_editor']",
+      ".cm-editor",
+      ".CodeMirror"
+    ];
+    const all = Array.from(docRoot.querySelectorAll(selectors.join(", ")));
+    if (all.length === 0) return null;
+    if (all.length === 1) return all[0];
+
+    const filtered = all.filter(el => {
+      if (!el || typeof el.closest !== "function") return true;
+      return !el.closest(".question-description, .problem-statement, .problem-description, [class*='description'], [class*='instructions'], .testcase-output, [class*='console'], [class*='output']");
+    });
+    const pool = filtered.length > 0 ? filtered : all;
+
+    let best = null;
+    let maxArea = -1;
+    for (const el of pool) {
+      const rect = (typeof el.getBoundingClientRect === "function") ? el.getBoundingClientRect() : null;
+      const w = rect ? rect.width : (el.offsetWidth || el.clientWidth || 0);
+      const h = rect ? rect.height : (el.offsetHeight || el.clientHeight || 0);
+      if (pool.length > 1 && (w < 100 || h < 100)) continue;
+      const area = w * h;
+      if (area > maxArea) {
+        maxArea = area;
+        best = el;
+      }
+    }
+    return best || pool[0];
+  }
+
+  // Deep Editor Discovery Engine
+  function discoverEditor() {
+    // 1. Monaco Editor
+    const mainEl = findMainEditorElement(doc);
+    const monacoEl = (mainEl && (mainEl.classList?.contains("monaco-editor") || (mainEl.className && String(mainEl.className).includes("monaco")))) ? mainEl : (mainEl || doc.querySelector(".monaco-editor, [class*='monaco-editor'], [data-editor='monaco']"));
+    const activeMonaco = resolveAmdMonaco() || (win && win.monaco);
+
+    if (monacoEl || (activeMonaco && activeMonaco.editor)) {
+      if (activeMonaco && activeMonaco.editor && typeof activeMonaco.editor.getEditors === "function") {
+        try {
+          const eds = activeMonaco.editor.getEditors();
+          if (Array.isArray(eds) && eds.length > 0) {
+            const nonReadOnly = eds.filter(e => {
+              if (!e) return false;
+              let isReadOnly = false;
+              if (typeof e.getOption === "function" && activeMonaco.editor && activeMonaco.editor.EditorOption) {
+                try { isReadOnly = e.getOption(activeMonaco.editor.EditorOption.readOnly) === true; } catch (_) {}
+              }
+              if (!isReadOnly && typeof e.getRawOptions === "function") {
+                try { isReadOnly = (e.getRawOptions() || {}).readOnly === true; } catch (_) {}
+              }
+              if (isReadOnly) return false;
+
+              const dn = (typeof e.getDomNode === "function") ? e.getDomNode() : null;
+              if (dn) {
+                if (typeof dn.closest === "function" && dn.closest(".question-description, .problem-statement, .problem-description, [class*='description'], [class*='instructions'], .testcase-output, [class*='console'], [class*='output']")) {
+                  return false;
+                }
+                const rect = (typeof dn.getBoundingClientRect === "function") ? dn.getBoundingClientRect() : null;
+                const w = rect ? rect.width : (dn.offsetWidth || 0);
+                const h = rect ? rect.height : (dn.offsetHeight || 0);
+                if (eds.length > 1 && (w < 100 || h < 100)) return false;
+              }
+              return true;
+            });
+            const pool = nonReadOnly.length > 0 ? nonReadOnly : eds;
+            let matched = mainEl ? pool.find(e => {
+              const dn = (typeof e.getDomNode === "function") ? e.getDomNode() : null;
+              return dn && (dn === mainEl || dn.contains(mainEl) || mainEl.contains(dn));
+            }) : null;
+            if (!matched) {
+              let maxArea = -1;
+              let bestEd = pool[0];
+              for (const ed of pool) {
+                const dn = typeof ed.getDomNode === "function" ? ed.getDomNode() : null;
+                if (dn) {
+                  const rect = (typeof dn.getBoundingClientRect === "function") ? dn.getBoundingClientRect() : null;
+                  const w = rect ? rect.width : (dn.offsetWidth || 0);
+                  const h = rect ? rect.height : (dn.offsetHeight || 0);
+                  const area = w * h;
+                  if (area > maxArea) {
+                    maxArea = area;
+                    bestEd = ed;
+                  }
+                }
+              }
+              matched = bestEd;
+            }
+            const ed = matched || pool[pool.length - 1];
+            const targetEl = (typeof ed.getDomNode === "function" ? ed.getDomNode() : null) || monacoEl;
+            const fiberScan = scanReactFiber(targetEl);
+            return {
+              type: "monaco",
+              instance: ed,
+              model: typeof ed.getModel === "function" ? ed.getModel() : null,
+              element: targetEl,
+              onChange: fiberScan.onChange
+            };
+          }
+        } catch (_) {}
+      }
+
+      if (activeMonaco && activeMonaco.editor && typeof activeMonaco.editor.getModels === "function") {
+        try {
+          const models = (typeof window !== "undefined" && window.monaco && window.monaco.editor && typeof window.monaco.editor.getModels === "function") ? window.monaco.editor.getModels() : activeMonaco.editor.getModels();
+          if (Array.isArray(models) && models.length > 0) {
+            let targetM = null;
+            if (models.length === 1) {
+              targetM = models[0];
+            } else {
+              const templateSignatures = [/#include/i, /\bclass\s+Solution\b/i, /\bdef\s+/i, /\bfunction\s+/i, /\bpublic\s+class\b/i];
+              for (let i = models.length - 1; i >= 0; i--) {
+                const m = models[i];
+                const val = (m && typeof m.getValue === "function") ? m.getValue() : "";
+                if (templateSignatures.some(sig => sig.test(val))) {
+                  targetM = m;
+                  break;
+                }
+              }
+              if (!targetM) {
+                const attached = models.filter(m => typeof m.isAttachedToEditor === "function" && m.isAttachedToEditor());
+                targetM = attached.length > 0 ? attached[attached.length - 1] : models[models.length - 1];
+              }
+            }
+            if (targetM) {
+              const fiberScan = scanReactFiber(monacoEl);
+              return {
+                type: "monaco_model",
+                instance: null,
+                model: targetM,
+                element: monacoEl,
+                onChange: fiberScan.onChange
+              };
+            }
+          }
+        } catch (_) {}
+      }
+
+      if (monacoEl) {
+        let curEl = monacoEl;
+        let elHops = 0;
+        while (curEl && elHops < 12) {
+          if (curEl.__monaco_editor__ || curEl.editor || curEl._editor || curEl.monaco) {
+            const ed = curEl.__monaco_editor__ || curEl.editor || curEl._editor || curEl.monaco;
+            const fiberScan = scanReactFiber(monacoEl);
+            return {
+              type: "monaco",
+              instance: ed,
+              model: typeof ed.getModel === "function" ? ed.getModel() : null,
+              element: monacoEl,
+              onChange: fiberScan.onChange
+            };
+          }
+          curEl = curEl.parentElement;
+          elHops++;
+        }
+
+        const fiberScan = scanReactFiber(monacoEl);
+        if (fiberScan.editor) {
+          const ed = fiberScan.editor.instance;
+          return {
+            type: fiberScan.editor.type,
+            instance: fiberScan.editor.type === "monaco" ? ed : null,
+            model: fiberScan.editor.type === "monaco_model" ? ed : (typeof ed.getModel === "function" ? ed.getModel() : null),
+            element: monacoEl,
+            onChange: fiberScan.onChange
+          };
+        }
+      }
+    }
+
+    // 2. Ace Editor
+    const aceEl = doc.querySelector(".ace_editor, [class*='ace_editor']");
+    if (aceEl || (win && win.ace)) {
+      if (aceEl && aceEl.env && aceEl.env.editor && typeof aceEl.env.editor.getValue === "function") {
+        const fiberScan = scanReactFiber(aceEl);
+        return {
+          type: "ace",
+          instance: aceEl.env.editor,
+          element: aceEl,
+          onChange: fiberScan.onChange
+        };
+      }
+      if (aceEl && (aceEl.editor || aceEl.__ace_editor__)) {
+        const ed = aceEl.editor || aceEl.__ace_editor__;
+        if (typeof ed.getValue === "function") {
+          const fiberScan = scanReactFiber(aceEl);
+          return {
+            type: "ace",
+            instance: ed,
+            element: aceEl,
+            onChange: fiberScan.onChange
+          };
+        }
+      }
+      if (aceEl && win && win.ace && typeof win.ace.edit === "function") {
+        try {
+          const ed = window.ace.edit(aceEl);
+          if (ed && typeof ed.getValue === "function") {
+            const fiberScan = scanReactFiber(aceEl);
+            return {
+              type: "ace",
+              instance: ed,
+              element: aceEl,
+              onChange: fiberScan.onChange
+            };
+          }
+        } catch (_) {}
+      }
+      if (aceEl) {
+        let curEl = aceEl;
+        let elHops = 0;
+        while (curEl && elHops < 10) {
+          if (curEl.editor || curEl.__ace_editor__ || curEl._editor) {
+            const cand = curEl.editor || curEl.__ace_editor__ || curEl._editor;
+            if (cand && typeof cand.getValue === "function" && cand.session) {
+              const fiberScan = scanReactFiber(aceEl);
+              return {
+                type: "ace",
+                instance: cand,
+                element: aceEl,
+                onChange: fiberScan.onChange
+              };
+            }
+          }
+          curEl = curEl.parentElement;
+          elHops++;
+        }
+
+        const fiberScan = scanReactFiber(aceEl);
+        if (fiberScan.editor && fiberScan.editor.type === "ace") {
+          return {
+            type: "ace",
+            instance: fiberScan.editor.instance,
+            element: aceEl,
+            onChange: fiberScan.onChange
+          };
+        }
+      }
+    }
+
+    // 3. Same-origin iframe scan
+    if (doc.querySelectorAll) {
+      try {
+        const iframes = Array.from(doc.querySelectorAll("iframe"));
+        for (const ifr of iframes) {
+          try {
+            const ifrDoc = ifr.contentDocument || (ifr.contentWindow && ifr.contentWindow.document);
+            if (ifrDoc) {
+              const ifrMonaco = ifrDoc.querySelector(".monaco-editor");
+              if (ifrMonaco) {
+                const fiberScan = scanReactFiber(ifrMonaco);
+                if (fiberScan.editor) {
+                  return {
+                    type: fiberScan.editor.type,
+                    instance: fiberScan.editor.instance,
+                    model: typeof fiberScan.editor.instance?.getModel === "function" ? fiberScan.editor.instance.getModel() : null,
+                    element: ifrMonaco,
+                    onChange: fiberScan.onChange
+                  };
+                }
+              }
+            }
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }
+
+    // 4. CodeMirror 5 / 6
+    const cmEl = doc.querySelector(".CodeMirror, .cm-editor");
+    if (cmEl) {
+      if (cmEl.CodeMirror && typeof cmEl.CodeMirror.getValue === "function") {
+        return { type: "codemirror", instance: cmEl.CodeMirror, element: cmEl };
+      }
+      if (cmEl.cmView && cmEl.cmView.view) {
+        return { type: "codemirror6", instance: cmEl.cmView.view, element: cmEl };
+      }
+      const fiberScan = scanReactFiber(cmEl);
+      if (fiberScan.editor) {
+        return { type: "codemirror", instance: fiberScan.editor.instance, element: cmEl, onChange: fiberScan.onChange };
+      }
+    }
+
+    // 5. Requirement B Hard Rule: If editor container is present in DOM, NEVER fall back to hidden focus textarea!
+    if (doc.querySelector(".ace_editor, .monaco-editor, .CodeMirror, .cm-editor")) {
+      return {
+        type: "blocked_container",
+        error: "Editor container found but MAIN-world editor instance was not accessible",
+        element: null
+      };
+    }
+
+    // 6. Generic Standalone Textarea fallback
+    const allTas = Array.from(doc.querySelectorAll("textarea"));
+    for (const ta of allTas) {
+      if (ta.matches && ta.matches(".ace_text-input, textarea.inputarea, .monaco-mouse-cursor-text")) continue;
+      if (ta.closest && ta.closest(".ace_editor, .monaco-editor, .CodeMirror, .cm-editor")) continue;
+      return { type: "textarea", element: ta, instance: null };
+    }
+
+    return null;
+  }
+
+  const discovered = discoverEditor();
+  if (!discovered) {
+    return {
+      success: false,
+      ok: false,
+      selected: false,
+      error: "No code editor or input textarea found in document",
+      editorType: "none"
+    };
+  }
+
+  if (discovered.type === "blocked_container") {
+    return {
+      success: false,
+      ok: false,
+      selected: false,
+      error: discovered.error,
+      editorType: "blocked_container"
+    };
+  }
+
+  // Obtain current buffer value for boilerplate & header preservation
+  let currentVal = "";
+  if (discovered.type === "ace" && discovered.instance && typeof discovered.instance.getValue === "function") {
+    currentVal = discovered.instance.getValue();
+  } else if ((discovered.type === "monaco" || discovered.type === "monaco_model") && discovered.model && typeof discovered.model.getValue === "function") {
+    currentVal = discovered.model.getValue();
+  } else if (discovered.type === "codemirror" && discovered.instance && typeof discovered.instance.getValue === "function") {
+    currentVal = discovered.instance.getValue();
+  } else if (discovered.type === "codemirror6" && discovered.instance && discovered.instance.state && discovered.instance.state.doc) {
+    currentVal = discovered.instance.state.doc.toString();
+  } else if (discovered.type === "textarea" && discovered.element) {
+    currentVal = discovered.element.value || "";
+  }
+
+  // Step A: Preserve Folded Header Comments & Boilerplate (#include, using namespace, class/struct Node)
+  let finalCode = targetCode;
+
+  function findOutsideComments(str, regex) {
+    if (!str || typeof str !== "string") return -1;
+    let inBlockComment = false;
+    let inLineComment = false;
+    let cleaned = "";
+    for (let i = 0; i < str.length; i++) {
+      if (!inBlockComment && !inLineComment) {
+        if (str[i] === "/" && str[i + 1] === "*") {
+          inBlockComment = true;
+          cleaned += "  ";
+          i++;
+        } else if (str[i] === "/" && str[i + 1] === "/") {
+          inLineComment = true;
+          cleaned += "  ";
+          i++;
+        } else {
+          cleaned += str[i];
+        }
+      } else if (inBlockComment) {
+        if (str[i] === "*" && str[i + 1] === "/") {
+          inBlockComment = false;
+          cleaned += "  ";
+          i++;
+        } else {
+          cleaned += (str[i] === "\n") ? "\n" : " ";
+        }
+      } else if (inLineComment) {
+        if (str[i] === "\n") {
+          inLineComment = false;
+          cleaned += "\n";
+        } else {
+          cleaned += " ";
+        }
+      }
+    }
+    return cleaned.search(regex);
+  }
+
+  const alreadyHasHeaders = targetCode.includes("#include") || (targetCode.includes("using namespace") && targetCode.includes("/*"));
+  if (payload.preserveBoilerplate !== false && !alreadyHasHeaders && currentVal && currentVal.trim()) {
+    let insertionIdx = -1;
+
+    // 1. If targetCode defines a class, locate that exact class definition outside comments in currentVal
+    const targetClassMatch = targetCode.match(/\bclass\s+([a-zA-Z0-9_]+)\b/i);
+    if (targetClassMatch) {
+      const className = targetClassMatch[1];
+      const specificClassIdx = findOutsideComments(currentVal, new RegExp("\\bclass\\s+" + className + "\\b", "i"));
+      if (specificClassIdx > 0) {
+        insertionIdx = specificClassIdx;
+      }
+    }
+
+    // 2. If targetCode does NOT define a class, but currentVal defines a class (e.g. class Solution or class solution):
+    // Wrap targetCode cleanly inside that class so closing braces and class context are never truncated!
+    if (insertionIdx === -1) {
+      const currentClassMatch = currentVal.match(/\bclass\s+([a-zA-Z0-9_]+)\b/i);
+      if (currentClassMatch) {
+        const currentClassName = currentClassMatch[1];
+        const classIdx = findOutsideComments(currentVal, new RegExp("\\bclass\\s+" + currentClassName + "\\b", "i"));
+        if (classIdx > 0) {
+          insertionIdx = classIdx;
+          const isPython = /def\s+[a-zA-Z0-9_]+\s*\(|self\b/.test(targetCode);
+          if (isPython) {
+            const indented = targetCode.split(/\r?\n/).map(l => "    " + l).join("\n");
+            targetCode = `class ${currentClassName}:\n${indented}`;
+          } else {
+            const indented = targetCode.split(/\r?\n/).map(l => "    " + l).join("\n");
+            targetCode = `class ${currentClassName} {\npublic:\n${indented}\n};`;
+          }
+        }
+      }
+    }
+
+    // 3. If targetCode defines a function/method and no class was matched, locate it outside comments in currentVal
+    if (insertionIdx === -1) {
+      const targetFuncMatch = targetCode.match(/(?:def|function|[a-zA-Z0-9_*&<>]+\s+)\s*([a-zA-Z0-9_]+)\s*\(/i);
+      if (targetFuncMatch) {
+        const funcName = targetFuncMatch[1];
+        const funcIdx = findOutsideComments(currentVal, new RegExp("\\b" + funcName + "\\s*\\(", "i"));
+        if (funcIdx > 0) {
+          insertionIdx = funcIdx;
+        }
+      }
+    }
+
+    // 4. Fallback: match any active class definition outside comments
+    if (insertionIdx === -1) {
+      const anyClassIdx = findOutsideComments(currentVal, /\bclass\s+[a-zA-Z0-9_]+\b/i);
+      if (anyClassIdx > 0) {
+        insertionIdx = anyClassIdx;
+      }
+    }
+
+    if (insertionIdx > 0) {
+      const leadingHeader = currentVal.slice(0, insertionIdx);
+      finalCode = leadingHeader.trimEnd() + "\n\n" + targetCode.trimStart();
+    } else {
+      const headerMatch = currentVal.match(/^(\s*(?:#include[^\n]*\n|using\s+namespace[^\n]*\n|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)\s*)+/);
+      if (headerMatch && !targetCode.trim().startsWith("#include") && !targetCode.trim().startsWith("/*")) {
+        const leadingHeader = headerMatch[0];
+        finalCode = leadingHeader.trimEnd() + "\n\n" + targetCode.trimStart();
+      }
+    }
+  }
+
+  let verifiedCode = "";
+
+  // Step B: Multi-Layer Non-Paste Code Writing & Keystroke-Bypass Pipeline
+  if (discovered.type === "ace" && discovered.instance) {
+    const editor = discovered.instance;
+    if (typeof editor.focus === "function") {
+      try { editor.focus(); } catch (_) {}
+    }
+
+    // Save and disable auto behaviors
+    let savedBehaviours = true;
+    try {
+      if (typeof editor.getBehavioursEnabled === "function") savedBehaviours = editor.getBehavioursEnabled();
+      if (typeof editor.setBehavioursEnabled === "function") editor.setBehavioursEnabled(false);
+      if (typeof editor.setOption === "function") {
+        editor.setOption("behavioursEnabled", false);
+        editor.setOption("wrapBehavioursEnabled", false);
+      }
+    } catch (_) {}
+
+    // Non-paste buffer replacement
+    if (editor.session && editor.session.doc && typeof editor.session.doc.setValue === "function") {
+      editor.session.doc.setValue(finalCode);
+    } else if (typeof editor.setValue === "function") {
+      editor.setValue(finalCode, 1);
+    }
+
+    // Notify Ace command pipeline
+    try {
+      if (editor.commands && typeof editor.commands.exec === "function") {
+        editor.commands.exec("insertstring", editor, "");
+      } else if (typeof editor.onTextInput === "function") {
+        editor.onTextInput("");
+      }
+      if (typeof editor._signal === "function") {
+        editor._signal("change", {});
+      }
+    } catch (_) {}
+
+    // Sync React Fiber onChange callback
+    if (typeof discovered.onChange === "function") {
+      try { discovered.onChange(finalCode); } catch (_) {}
+    }
+
+    // Dispatch simulated keyboard event on Ace hidden textarea
+    const hiddenTa = doc.querySelector(".ace_text-input");
+    if (hiddenTa) {
+      try {
+        hiddenTa.dispatchEvent(new KeyboardEvent("keydown", { key: "Shift", code: "ShiftRight", bubbles: true }));
+        hiddenTa.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+        hiddenTa.dispatchEvent(new KeyboardEvent("keyup", { key: "Shift", code: "ShiftRight", bubbles: true }));
+      } catch (_) {}
+    }
+
+    // Restore auto behaviors
+    try {
+      if (typeof editor.setBehavioursEnabled === "function") editor.setBehavioursEnabled(savedBehaviours);
+      if (typeof editor.clearSelection === "function") editor.clearSelection();
+    } catch (_) {}
+
+    verifiedCode = typeof editor.getValue === "function" ? editor.getValue() : finalCode;
+  }
+  else if ((discovered.type === "monaco" || discovered.type === "monaco_model") && (discovered.model || discovered.instance)) {
+    const editor = discovered.instance;
+    const model = discovered.model || (editor && editor.getModel ? editor.getModel() : null);
+
+    if (editor && typeof editor.focus === "function") {
+      try { editor.focus(); } catch (_) {}
+    }
+
+    const fullRange = model && typeof model.getFullModelRange === "function"
+      ? model.getFullModelRange()
+      : { startLineNumber: 1, startColumn: 1, endLineNumber: 99999, endColumn: 99999 };
+
+    let editApplied = false;
+    if (editor && typeof editor.executeEdits === "function") {
+      try {
+        editor.executeEdits("keyboard", [{
+          range: fullRange,
+          text: finalCode,
+          forceMoveMarkers: true
+        }]);
+        editApplied = true;
+      } catch (_) {}
+    }
+
+    if (!editApplied || (model && typeof model.getValue === "function" && model.getValue().trim() !== finalCode.trim())) {
+      if (model && typeof model.pushEditOperations === "function") {
+        try {
+          model.pushEditOperations([], [{ range: fullRange, text: finalCode }], () => null);
+        } catch (_) {
+          if (typeof model.setValue === "function") model.setValue(finalCode);
+        }
+      } else if (model && typeof model.setValue === "function") {
+        model.setValue(finalCode);
+      }
+    }
+
+    if (typeof discovered.onChange === "function") {
+      try { discovered.onChange(finalCode, {}); } catch (_) {}
+    }
+
+    verifiedCode = (model && typeof model.getValue === "function") ? model.getValue() : finalCode;
+  }
+  else if (discovered.type === "codemirror" && discovered.instance) {
+    if (typeof discovered.instance.setValue === "function") {
+      discovered.instance.setValue(finalCode);
+    }
+    if (typeof discovered.onChange === "function") {
+      try { discovered.onChange(finalCode); } catch (_) {}
+    }
+    verifiedCode = typeof discovered.instance.getValue === "function" ? discovered.instance.getValue() : finalCode;
+  }
+  else if (discovered.type === "codemirror6" && discovered.instance) {
+    const view = discovered.instance;
+    if (view.state && view.dispatch) {
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: finalCode } });
+    }
+    verifiedCode = view.state ? view.state.doc.toString() : finalCode;
+  }
+  else if (discovered.type === "textarea" && discovered.element) {
+    const el = discovered.element;
+    if (typeof el.focus === "function") {
+      try { el.focus(); } catch (_) {}
+    }
+    el.value = finalCode;
+    try { el.dispatchEvent(new Event("input", { bubbles: true })); } catch (_) {}
+    try { el.dispatchEvent(new Event("change", { bubbles: true })); } catch (_) {}
+    verifiedCode = el.value;
+  }
+
+  return {
+    success: true,
+    ok: true,
+    selected: true,
+    verified_code: true,
+    editorType: discovered.type,
+    length: (verifiedCode || finalCode).length,
+    code: verifiedCode || finalCode
+  };
+}
+
+if (typeof globalThis !== "undefined") {
+  globalThis.handleTriggerSolve = handleTriggerSolve;
+  globalThis.handleTriggerApply = handleTriggerApply;
+  globalThis.handleTriggerAutoLoop = handleTriggerAutoLoop;
+  globalThis.handleOpenPopupHud = handleOpenPopupHud;
+  globalThis.updateActionBadge = updateActionBadge;
+  globalThis.readCodeFromMainWorld = readCodeFromMainWorld;
+  globalThis.writeCodeWithHumanTypingInMainWorld = writeCodeWithHumanTypingInMainWorld;
+}
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    handleTriggerSolve,
+    handleTriggerApply,
+    handleTriggerAutoLoop,
+    handleOpenPopupHud,
+    updateActionBadge,
+    readCodeFromMainWorld,
+    writeCodeWithHumanTypingInMainWorld
+  };
+}
+
+

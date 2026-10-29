@@ -1,0 +1,387 @@
+{
+  "timestamp": 1792586464.783116,
+  "is_weekly": false,
+  "total_evaluated": 6,
+  "non_sample_evaluated": 0,
+  "overall_accuracy_pct": 100.0,
+  "latency_percentiles_ms": {
+    "p50": 783.08,
+    "p90": 1092.75,
+    "p95": 1170.6,
+    "max": 1248.46
+  },
+  "disagreement_rate_pct": 0.0,
+  "fallback_trigger_rate_pct": 0.0,
+  "model_error_counts": {
+    "primary_a": 0,
+    "primary_b": 0,
+    "fallback": 0
+  },
+  "confidence_calibration": {
+    "HIGH_BOTH_AGREE": {
+      "count": 6,
+      "correct": 6,
+      "accuracy_pct": 100.0
+    },
+    "MEDIUM_TIEBREAKER_AGREE": {
+      "count": 0,
+      "correct": 0,
+      "accuracy_pct": 0.0
+    },
+    "MEDIUM_SEARXNG_GROUNDED": {
+      "count": 0,
+      "correct": 0,
+      "accuracy_pct": 0.0
+    },
+    "LOW_FALLBACK_RESCUE": {
+      "count": 0,
+      "correct": 0,
+      "accuracy_pct": 0.0
+    },
+    "UNCERTAIN_BUDGET_EXHAUSTED": {
+      "count": 0,
+      "correct": 0,
+      "accuracy_pct": 0.0
+    },
+    "UNCERTAIN_NO_AGREEMENT": {
+      "count": 0,
+      "correct": 0,
+      "accuracy_pct": 0.0
+    },
+    "UNCERTAIN_PRIMARY_FAILURE": {
+      "count": 0,
+      "correct": 0,
+      "accuracy_pct": 0.0
+    }
+  },
+  "previously_wrong_metrics": {
+    "total_previously_wrong": 0,
+    "recovered_count": 0,
+    "recovery_rate_pct": 0.0
+  },
+  "verdict": "DECISION: INSUFFICIENT_DATA (need >= 20 real non-sample questions, got 0)",
+  "questions": [
+    {
+      "id": "SAMPLE_1",
+      "is_sample": true,
+      "from_wrong_answers": false,
+      "subject": "Biology",
+      "q_type": "mcq",
+      "question": "What is the primary powerhouse of the eukaryotic cell?",
+      "options": [
+        "Ribosome",
+        "Mitochondrion",
+        "Nucleus",
+        "Endoplasmic reticulum"
+      ],
+      "expected_answer": "B",
+      "solver_response": {
+        "status": "OK",
+        "confidence_tier": "HIGH_BOTH_AGREE",
+        "canonical_key": "B",
+        "selected_index": 1,
+        "selected_text": "Mitochondrion",
+        "permutation_indices": null,
+        "ordered_texts": null,
+        "reason": "Mitochondrion generates ATP, the cell's energy; thus primary powerhouse",
+        "latency_ms": 937.0334999985062,
+        "models_called": [
+          "primary_a",
+          "primary_b"
+        ],
+        "agreement_details": {
+          "primary_a": {
+            "model": "openai/gpt-oss-120b",
+            "success": true,
+            "error": null,
+            "canonical_key": "B",
+            "reason": "Mitochondrion generates ATP, the cell's energy; thus primary powerhouse",
+            "latency_ms": 936.670100025367
+          },
+          "primary_b": {
+            "model": "qwen/qwen3.8-27b",
+            "success": true,
+            "error": null,
+            "canonical_key": "B",
+            "reason": "Mitochondria generate most of the cell's ATP through cellular respiration, earning the title 'powerhouse of the cell'.",
+            "latency_ms": 674.5586000033654
+          }
+        },
+        "searxng_used": false,
+        "search_sources": [],
+        "error": null
+      },
+      "is_correct": true
+    },
+    {
+      "id": "SAMPLE_2",
+      "is_sample": true,
+      "from_wrong_answers": false,
+      "subject": "Computer Science",
+      "q_type": "mcq",
+      "question": "Which of the following time complexities represents constant time?",
+      "options": [
+        "O(n)",
+        "O(log n)",
+        "O(1)",
+        "O(n^2)"
+      ],
+      "expected_answer": "C",
+      "solver_response": {
+        "status": "OK",
+        "confidence_tier": "HIGH_BOTH_AGREE",
+        "canonical_key": "C",
+        "selected_index": 2,
+        "selected_text": "O(1)",
+        "permutation_indices": null,
+        "ordered_texts": null,
+        "reason": "Constant time complexity is O(1) among options",
+        "latency_ms": 630.7647999783512,
+        "models_called": [
+          "primary_a",
+          "primary_b"
+        ],
+        "agreement_details": {
+          "primary_a": {
+            "model": "openai/gpt-oss-120b",
+            "success": true,
+            "error": null,
+            "canonical_key": "C",
+            "reason": "Constant time complexity is O(1) among options",
+            "latency_ms": 630.5915999982972
+          },
+          "primary_b": {
+            "model": "qwen/qwen3.8-27b",
+            "success": true,
+            "error": null,
+            "canonical_key": "C",
+            "reason": "O(1) denotes constant time complexity, meaning execution time remains fixed regardless of input size.",
+            "latency_ms": 449.4445000018459
+          }
+        },
+        "searxng_used": false,
+        "search_sources": [],
+        "error": null
+      },
+      "is_correct": true
+    },
+    {
+      "id": "SAMPLE_3",
+      "is_sample": true,
+      "from_wrong_answers": false,
+      "subject": "Software Engineering",
+      "q_type": "order",
+      "question": "Arrange the standard stages of the Software Development Life Cycle (SDLC) in chronological order.",
+      "options": [
+        "Deployment",
+        "Requirements Analysis",
+        "System Design",
+        "Coding & Implementation"
+      ],
+      "expected_answer": "B,C,D,A",
+      "solver_response": {
+        "status": "OK",
+        "confidence_tier": "HIGH_BOTH_AGREE",
+        "canonical_key": "B,C,D,A",
+        "selected_index": null,
+        "selected_text": null,
+        "permutation_indices": [
+          1,
+          2,
+          3,
+          0
+        ],
+        "ordered_texts": [
+          "Requirements Analysis",
+          "System Design",
+          "Coding & Implementation",
+          "Deployment"
+        ],
+        "reason": "Standard SDLC sequence: 1. Requirements Analysis (B), 2. System Design (C), 3. Coding & Implementation (D), 4. Deployment (A).",
+        "latency_ms": 699.0180999855511,
+        "models_called": [
+          "primary_a",
+          "primary_b"
+        ],
+        "agreement_details": {
+          "primary_a": {
+            "model": "openai/gpt-oss-120b",
+            "success": true,
+            "error": null,
+            "canonical_key": "B,C,D,A",
+            "reason": "Standard SDLC order: Requirements Analysis \u2192 System Design \u2192 Coding & Implementation \u2192 Deployment, mapping to blocks B, C, D, A",
+            "latency_ms": 698.8578000164125
+          },
+          "primary_b": {
+            "model": "qwen/qwen3.8-27b",
+            "success": true,
+            "error": null,
+            "canonical_key": "B,C,D,A",
+            "reason": "Standard SDLC sequence: 1. Requirements Analysis (B), 2. System Design (C), 3. Coding & Implementation (D), 4. Deployment (A).",
+            "latency_ms": 570.8685999852605
+          }
+        },
+        "searxng_used": false,
+        "search_sources": [],
+        "error": null
+      },
+      "is_correct": true
+    },
+    {
+      "id": "SAMPLE_4",
+      "is_sample": true,
+      "from_wrong_answers": false,
+      "subject": "History",
+      "q_type": "order",
+      "question": "Arrange these historic milestones in chronological order from earliest to latest.",
+      "options": [
+        "Invention of the World Wide Web",
+        "First human moon landing",
+        "Invention of the transistor",
+        "First flight of the Wright brothers"
+      ],
+      "expected_answer": "D,C,B,A",
+      "solver_response": {
+        "status": "OK",
+        "confidence_tier": "HIGH_BOTH_AGREE",
+        "canonical_key": "D,C,B,A",
+        "selected_index": null,
+        "selected_text": null,
+        "permutation_indices": [
+          3,
+          2,
+          1,
+          0
+        ],
+        "ordered_texts": [
+          "First flight of the Wright brothers",
+          "Invention of the transistor",
+          "First human moon landing",
+          "Invention of the World Wide Web"
+        ],
+        "reason": "Wright brothers (1903) -> Transistor (1947) -> Moon landing (1969) -> WWW (1989). Sequence: D, C, B, A.",
+        "latency_ms": 867.140999995172,
+        "models_called": [
+          "primary_a",
+          "primary_b"
+        ],
+        "agreement_details": {
+          "primary_a": {
+            "model": "openai/gpt-oss-120b",
+            "success": true,
+            "error": null,
+            "canonical_key": "D,C,B,A",
+            "reason": "Chronology: Wright brothers first flight 1903 (D); transistor invented 1947 (C); moon landing 1969 (B); World Wide Web invented 1989 (A).",
+            "latency_ms": 866.8214000063017
+          },
+          "primary_b": {
+            "model": "qwen/qwen3.8-27b",
+            "success": true,
+            "error": null,
+            "canonical_key": "D,C,B,A",
+            "reason": "Wright brothers (1903) -> Transistor (1947) -> Moon landing (1969) -> WWW (1989). Sequence: D, C, B, A.",
+            "latency_ms": 316.67169998399913
+          }
+        },
+        "searxng_used": false,
+        "search_sources": [],
+        "error": null
+      },
+      "is_correct": true
+    },
+    {
+      "id": "SAMPLE_5",
+      "is_sample": true,
+      "from_wrong_answers": false,
+      "subject": "Chemistry",
+      "q_type": "text",
+      "question": "What is the chemical symbol for gold?",
+      "options": [],
+      "expected_answer": "Au|gold",
+      "solver_response": {
+        "status": "OK",
+        "confidence_tier": "HIGH_BOTH_AGREE",
+        "canonical_key": "au",
+        "selected_index": null,
+        "selected_text": "au",
+        "permutation_indices": null,
+        "ordered_texts": null,
+        "reason": "Gold's periodic table symbol is Au",
+        "latency_ms": 597.1462999877986,
+        "models_called": [
+          "primary_a",
+          "primary_b"
+        ],
+        "agreement_details": {
+          "primary_a": {
+            "model": "openai/gpt-oss-120b",
+            "success": true,
+            "error": null,
+            "canonical_key": "au",
+            "reason": "Gold's periodic table symbol is Au",
+            "latency_ms": 390.02890000119805
+          },
+          "primary_b": {
+            "model": "qwen/qwen3.8-27b",
+            "success": true,
+            "error": null,
+            "canonical_key": "au",
+            "reason": "The chemical symbol for gold is derived from its Latin name, 'Aurum'.",
+            "latency_ms": 595.0977000175044
+          }
+        },
+        "searxng_used": false,
+        "search_sources": [],
+        "error": null
+      },
+      "is_correct": true
+    },
+    {
+      "id": "SAMPLE_6",
+      "is_sample": true,
+      "from_wrong_answers": false,
+      "subject": "Astronomy",
+      "q_type": "text",
+      "question": "What is the closest planet to the Sun in our Solar System?",
+      "options": [],
+      "expected_answer": "Mercury",
+      "solver_response": {
+        "status": "OK",
+        "confidence_tier": "HIGH_BOTH_AGREE",
+        "canonical_key": "mercury",
+        "selected_index": null,
+        "selected_text": "mercury",
+        "permutation_indices": null,
+        "ordered_texts": null,
+        "reason": "Mercury is the innermost planet orbiting closest to the Sun",
+        "latency_ms": 1248.4585999918636,
+        "models_called": [
+          "primary_a",
+          "primary_b"
+        ],
+        "agreement_details": {
+          "primary_a": {
+            "model": "openai/gpt-oss-120b",
+            "success": true,
+            "error": null,
+            "canonical_key": "mercury",
+            "reason": "Mercury is the innermost planet orbiting closest to the Sun",
+            "latency_ms": 983.1172999984119
+          },
+          "primary_b": {
+            "model": "qwen/qwen3.8-27b",
+            "success": true,
+            "error": null,
+            "canonical_key": "mercury",
+            "reason": "The planets in the Solar System are ordered by their distance from the Sun. Mercury is the first planet in this sequence, making it the closest to the Sun.",
+            "latency_ms": 1245.7443999883253
+          }
+        },
+        "searxng_used": false,
+        "search_sources": [],
+        "error": null
+      },
+      "is_correct": true
+    }
+  ]
+}

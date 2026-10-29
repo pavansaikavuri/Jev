@@ -114,10 +114,13 @@ def compute_cache_key(
     q_type: str,
     question: str,
     options: List[str],
+    language: Optional[str] = None,
+    starter_code: Optional[str] = None,
 ) -> str:
     """
     Deterministic order-invariant cache key:
     - Normalizes subject and question.
+    - For code: hashes subject, 'code', question, language, and starter_code.
     - For mcq and order: normalizes each option string and sorts alphabetically.
     - For text: options list is empty.
     - Returns SHA-256 hex digest.
@@ -126,7 +129,12 @@ def compute_cache_key(
     norm_type = q_type.strip().lower()
     norm_question = normalize_text_answer(question)
 
-    if norm_type in ("mcq", "order") and options:
+    if norm_type == "code":
+        lang = (language or "").strip().lower()
+        starter = (starter_code or "").strip()
+        payload = f"{norm_subject}|code|{norm_question}|{lang}|{starter}".encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+    elif norm_type in ("mcq", "order", "multi") and options:
         norm_opts = sorted([normalize_text_answer(opt) for opt in options])
         opts_repr = json.dumps(norm_opts, separators=(",", ":"))
     else:
@@ -142,6 +150,8 @@ def get_cached_solution(
     question: str,
     options: List[str],
     db_path: Optional[str] = None,
+    language: Optional[str] = None,
+    starter_code: Optional[str] = None,
 ) -> Optional[dict]:
     """
     Lookup answer in SQLite cache and dynamically remap synthetic keys
@@ -149,7 +159,11 @@ def get_cached_solution(
     Returns None on cache miss or incompatible remapping.
     """
     init_db(db_path)
-    key = compute_cache_key(subject, q_type, question, options)
+    key = compute_cache_key(
+        subject, q_type, question, options,
+        language=language,
+        starter_code=starter_code,
+    )
     norm_type = q_type.strip().lower()
 
     with get_db(db_path) as conn:
@@ -214,7 +228,32 @@ def get_cached_solution(
             permutation_indices = remapped_indices
             ordered_texts = [options[idx] for idx in remapped_indices]
 
-        elif norm_type == "text":
+        elif norm_type in ("multi", "multi_mcq", "multiselect"):
+            if not isinstance(canonical_raw, list):
+                canonical_raw = [canonical_raw]
+            remapped_indices: List[int] = []
+            for target_item in canonical_raw:
+                target_item_norm = normalize_text_answer(str(target_item))
+                for idx, opt in enumerate(options):
+                    if normalize_text_answer(opt) == target_item_norm and idx not in remapped_indices:
+                        remapped_indices.append(idx)
+                        break
+
+            if not remapped_indices:
+                conn.execute("UPDATE cache_stats SET value = value + 1 WHERE metric = 'misses';")
+                conn.commit()
+                return None
+
+            remapped_indices.sort()
+            canonical_keys = [chr(65 + idx) for idx in remapped_indices]
+            selected_texts = [options[idx] for idx in remapped_indices]
+            remapped_answer = ",".join(canonical_keys)
+            remapped_index = remapped_indices[0]
+            remapped_text = selected_texts[0]
+            permutation_indices = None
+            ordered_texts = None
+
+        elif norm_type in ("text", "code"):
             remapped_answer = str(canonical_raw)
             remapped_index = None
             remapped_text = remapped_answer
@@ -237,6 +276,9 @@ def get_cached_solution(
             "answer": remapped_answer,
             "selected_index": remapped_index,
             "selected_text": remapped_text,
+            "selected_indices": remapped_indices if norm_type in ("multi", "multi_mcq", "multiselect") else None,
+            "selected_texts": selected_texts if norm_type in ("multi", "multi_mcq", "multiselect") else None,
+            "canonical_keys": canonical_keys if norm_type in ("multi", "multi_mcq", "multiselect") else None,
             "permutation_indices": permutation_indices,
             "ordered_texts": ordered_texts,
             "reason": row["reason"],
@@ -259,6 +301,8 @@ def cache_solution(
     options: List[str],
     solver_res: Any,
     db_path: Optional[str] = None,
+    language: Optional[str] = None,
+    starter_code: Optional[str] = None,
 ) -> bool:
     """
     Zero-Poison Rule:
@@ -289,6 +333,16 @@ def cache_solution(
         else:
             return False
 
+    elif norm_type in ("multi", "multi_mcq", "multiselect"):
+        selected_texts = getattr(solver_res, "selected_texts", None)
+        selected_indices = getattr(solver_res, "selected_indices", None)
+        if selected_texts:
+            canonical_payload = selected_texts
+        elif selected_indices:
+            canonical_payload = [options[i] for i in selected_indices if 0 <= i < len(options)]
+        else:
+            return False
+
     elif norm_type == "order":
         ordered_texts = getattr(solver_res, "ordered_texts", None)
         perm_indices = getattr(solver_res, "permutation_indices", None)
@@ -305,10 +359,25 @@ def cache_solution(
             return False
         canonical_payload = canon_key
 
+    elif norm_type == "code":
+        code_ans = (
+            getattr(solver_res, "answer", None)
+            or getattr(solver_res, "selected_text", None)
+            or getattr(solver_res, "raw_answer", None)
+            or getattr(solver_res, "canonical_key", "")
+        )
+        if not code_ans:
+            return False
+        canonical_payload = code_ans
+
     else:
         return False
 
-    key = compute_cache_key(subject, q_type, question, options)
+    key = compute_cache_key(
+        subject, q_type, question, options,
+        language=language,
+        starter_code=starter_code,
+    )
     if tier == "HIGH_BOTH_AGREE":
         score = 1.0
         label = "high"
@@ -365,6 +434,8 @@ def record_wrong_answer(
     confidence_tier_at_failure: str = "",
     notes: str = "",
     db_path: Optional[str] = None,
+    language: Optional[str] = None,
+    starter_code: Optional[str] = None,
 ) -> Tuple[str, str]:
     """
     Record a wrong answer report with order-invariant cache key.
@@ -375,7 +446,11 @@ def record_wrong_answer(
       Returns ("overridden_and_logged", cache_key).
     """
     init_db(db_path)
-    key = compute_cache_key(subject, q_type, question, options)
+    key = compute_cache_key(
+        subject, q_type, question, options,
+        language=language,
+        starter_code=starter_code,
+    )
     norm_type = q_type.strip().lower()
     options_json = json.dumps(options or [])
 
@@ -437,8 +512,8 @@ def record_wrong_answer(
             else:
                 canonical_payload = [str(correct_answer).strip()]
 
-    elif norm_type == "text":
-        canonical_payload = normalize_text_answer(str(correct_answer))
+    elif norm_type in ("text", "code"):
+        canonical_payload = str(correct_answer).strip()
 
     else:
         canonical_payload = str(correct_answer).strip()

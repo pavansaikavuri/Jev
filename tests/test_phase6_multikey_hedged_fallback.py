@@ -695,6 +695,8 @@ def test_6_tier_hierarchy_and_two_wave_cascade():
         assert solver_res_w2.canonical_key == "A"
         assert wave2_dispatched is True, "Wave 2 should be dispatched when S-Tier models fail!"
         print("  -> Passed Wave 2 automatic escalation on S-Tier failure.")
+    reset_model_quarantine()
+    reset_key_quarantine()
 
 
 def test_7_non_destructive_check_models():

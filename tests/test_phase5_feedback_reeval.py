@@ -480,6 +480,116 @@ def test_5_extension_feedback_ui_audit():
     print("  -> sidepanel.css includes .badge-override and feedback layout styles.")
 
 
+def test_6_coding_solution_feedback_eviction_and_override():
+    """
+    Test 6: Verify that submitting feedback for a coding question (q_type='code')
+    with language and starter_code properly computes the exact cache key,
+    evicts the cached code, and applies USER_VERIFIED_OVERRIDE with the corrected code.
+    """
+    print("\n[Test 6] Testing Coding Solution Feedback Eviction and Override...")
+    client = TestClient(app)
+    subject = "Coding Practice"
+    q_type = "code"
+    question = "Given an array of integers nums and an integer target, return indices of the two numbers such that they add up to target."
+    language = "python"
+    starter_code = "def twoSum(nums: list[int], target: int) -> list[int]:\n    pass"
+
+    from backend.core.llm_client import SolverResponse
+    bogus_solver_res = SolverResponse(
+        status="OK",
+        canonical_key="py:bogus",
+        selected_text="def twoSum(nums, target):\n    return []",
+        reason="Initial attempt",
+        confidence_tier="HIGH_BOTH_AGREE",
+        confidence_score=1.0,
+        confidence_label="high",
+        latency_ms=50.0,
+        raw_answer="def twoSum(nums, target):\n    return []",
+    )
+    cache_solution(
+        subject=subject,
+        q_type=q_type,
+        question=question,
+        options=[],
+        solver_res=bogus_solver_res,
+        language=language,
+        starter_code=starter_code,
+    )
+
+    cached = get_cached_solution(
+        subject=subject,
+        q_type=q_type,
+        question=question,
+        options=[],
+        language=language,
+        starter_code=starter_code,
+    )
+    assert cached is not None
+    assert "return []" in cached["answer"]
+
+    # Evict via /feedback with correct_answer=None
+    resp_evict = client.post(
+        "/feedback",
+        json={
+            "subject": subject,
+            "q_type": q_type,
+            "question": question,
+            "options": [],
+            "wrong_model_answer": cached["answer"],
+            "correct_answer": None,
+            "confidence_tier_at_failure": "HIGH_BOTH_AGREE",
+            "language": language,
+            "starter_code": starter_code,
+            "export_to_csv": False,
+        },
+    )
+    assert resp_evict.status_code == 200
+    assert resp_evict.json()["action"] == "evicted_and_logged"
+
+    cached_after_evict = get_cached_solution(
+        subject=subject,
+        q_type=q_type,
+        question=question,
+        options=[],
+        language=language,
+        starter_code=starter_code,
+    )
+    assert cached_after_evict is None
+
+    # Override via /feedback with correct code
+    correct_code = "def twoSum(nums: list[int], target: int) -> list[int]:\n    seen = {}\n    for i, x in enumerate(nums):\n        if target - x in seen:\n            return [seen[target - x], i]\n        seen[x] = i\n    return []"
+    resp_override = client.post(
+        "/feedback",
+        json={
+            "subject": subject,
+            "q_type": q_type,
+            "question": question,
+            "options": [],
+            "wrong_model_answer": "def twoSum(nums, target):\n    return []",
+            "correct_answer": correct_code,
+            "confidence_tier_at_failure": "HIGH_BOTH_AGREE",
+            "language": language,
+            "starter_code": starter_code,
+            "export_to_csv": False,
+        },
+    )
+    assert resp_override.status_code == 200
+    assert resp_override.json()["action"] == "overridden_and_logged"
+
+    cached_overridden = get_cached_solution(
+        subject=subject,
+        q_type=q_type,
+        question=question,
+        options=[],
+        language=language,
+        starter_code=starter_code,
+    )
+    assert cached_overridden is not None
+    assert cached_overridden["confidence_tier"] == "USER_VERIFIED_OVERRIDE"
+    assert "seen = {}" in cached_overridden["answer"]
+    print("  -> Passed coding solution feedback eviction and override.")
+
+
 def main():
     print("=" * 75)
     print("PHASE 5 TEST SUITE: WRONG-ANSWER LOGGING, OVERRIDES & WEEKLY RE-EVAL")
@@ -490,9 +600,10 @@ def main():
     test_3_deduplicated_questions_csv_auto_append()
     test_4_weekly_reeval_and_drift_comparison()
     test_5_extension_feedback_ui_audit()
+    test_6_coding_solution_feedback_eviction_and_override()
 
     print("\n" + "=" * 75)
-    print("ALL 5 PHASE 5 VERIFICATION TESTS PASSED (100% SUCCESS)")
+    print("ALL 6 PHASE 5 VERIFICATION TESTS PASSED (100% SUCCESS)")
     print("=" * 75)
 
 

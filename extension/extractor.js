@@ -10,6 +10,239 @@
   "use strict";
 
   /**
+   * Detects proctored coding practice environments (such as learning.ccbp.in/question/*
+   * or pages containing Monaco / Ace code editors) where aggressive anti-cheat MutationObservers
+  /**
+   * Helper that checks if an element is located inside a code editor / viewer
+   * (.monaco-editor, .ace_editor, .cm-editor, .CodeMirror).
+   */
+  function isInsideCodeEditor(el) {
+    if (!el) return false;
+    if (typeof el.closest === "function") {
+      try {
+        return !!el.closest('.monaco-editor, .ace_editor, .cm-editor, .CodeMirror, [class*="monaco-editor"], [class*="ace_editor"]');
+      } catch (_) {}
+    }
+    let cur = el;
+    while (cur) {
+      const cls = cur.className || "";
+      if (typeof cls === "string" && (cls.includes("monaco-editor") || cls.includes("ace_editor") || cls.includes("cm-editor") || cls.includes("CodeMirror"))) {
+        return true;
+      }
+      cur = cur.parentElement;
+    }
+    return false;
+  }
+
+  /**
+   * Checks whether valid quiz options (radios, checkboxes, option cards, or MCQ practice header)
+   * exist on the page outside any code editor.
+   */
+  function hasQuizOptionsOutsideEditor(docRef) {
+    const doc = docRef || (typeof document !== "undefined" ? document : null);
+    if (!doc) return false;
+    try {
+      // 1. Check for header containing "MCQ PRACTICE" or "QUIZ" (strictly excluding "CODING PRACTICE")
+      const headerText = (doc.body ? (doc.body.innerText || doc.body.textContent || "") : (doc.documentElement ? doc.documentElement.textContent || "" : "")).slice(0, 1500).toLowerCase();
+      const isCodingHeader = /coding\s*practice/i.test(headerText);
+      const hasQuizHeader = !isCodingHeader && (/mcq\s*practice|practice\s*\|\s*|quiz\b/i.test(headerText));
+
+      // 2. Check for radio buttons outside code editor
+      const allRadios = doc.querySelectorAll ? Array.from(doc.querySelectorAll("input[type='radio']")) : [];
+      const radios = allRadios.filter(r => !isInsideCodeEditor(r));
+      if (radios.length >= 2) return true;
+
+      // 3. Check for checkboxes outside code editor
+      const allCheckboxes = doc.querySelectorAll ? Array.from(doc.querySelectorAll("input[type='checkbox'], [role='checkbox']")) : [];
+      const checkboxes = allCheckboxes.filter(c => !isInsideCodeEditor(c) && !isQuizZyInternalElement(c));
+      if (checkboxes.length >= 2) return true;
+
+      // 4. Check for option elements outside code editor
+      const candidateEls = doc.querySelectorAll ? Array.from(doc.querySelectorAll(".quiz-option, [data-quiz-option], [class*='radio-item'], [class*='option-item'], [role='radio'], [role='option'], [data-rbd-draggable-id]")) : [];
+      const optionCandidates = candidateEls.filter(el => !isInsideCodeEditor(el) && !isQuizZyInternalElement(el) && isVisible(el));
+      if (optionCandidates.length >= 2) return true;
+
+      // 5. Check for SUBMIT + (SHOW ANSWER or SKIP) buttons alongside options or header (never on pure coding page)
+      if (!isCodingHeader) {
+        const buttons = doc.querySelectorAll ? Array.from(doc.querySelectorAll("button, input[type='button'], input[type='submit'], a.btn")).filter(b => !isInsideCodeEditor(b)) : [];
+        const btnTexts = buttons.map(b => (b.innerText || b.textContent || b.value || "").trim().toLowerCase());
+        const hasSubmit = btnTexts.some(t => /^(?:submit|submit\s*answer)$/i.test(t));
+        const hasShowOrSkip = btnTexts.some(t => /^(?:show\s*answer|skip)$/i.test(t));
+        if (hasSubmit && (hasShowOrSkip || hasQuizHeader)) {
+          return true;
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  /**
+   * Extracts split-pane reference code from Monaco / Ace / CodeMirror / pre code blocks.
+   * For Monaco: extracts .view-lines .view-line elements sorted by vertical coordinate (style.top or getBoundingClientRect().top)
+   * to guarantee correct line order even when Monaco virtualizes and renders view-lines out of order.
+   * Strips gutter line numbers and replaces non-breaking spaces (\u00a0) with regular spaces, preserving indentation.
+   */
+  function extractSplitPaneCodeContext(questionRootEl, docRef) {
+    const doc = docRef || (typeof document !== "undefined" ? document : null);
+    if (!doc || !doc.querySelectorAll) return "";
+
+    try {
+      // 1. Check Monaco editors
+      const monacoEditors = Array.from(doc.querySelectorAll(".monaco-editor, [class*='monaco-editor']")).filter(isVisible);
+      for (const editor of monacoEditors) {
+        const viewLines = Array.from(editor.querySelectorAll(".view-lines .view-line, .view-line"));
+        if (viewLines.length > 0) {
+          const sortedLines = viewLines.slice().sort((a, b) => {
+            let topA = a.style && a.style.top ? parseFloat(a.style.top) : NaN;
+            let topB = b.style && b.style.top ? parseFloat(b.style.top) : NaN;
+            if (isNaN(topA) && typeof a.getBoundingClientRect === "function") {
+              try { topA = a.getBoundingClientRect().top; } catch (_) {}
+            }
+            if (isNaN(topB) && typeof b.getBoundingClientRect === "function") {
+              try { topB = b.getBoundingClientRect().top; } catch (_) {}
+            }
+            if (!isNaN(topA) && !isNaN(topB)) {
+              return topA - topB;
+            }
+            return 0;
+          });
+
+          const lines = sortedLines.map(el => {
+            return (el.textContent || "").replace(/\u00a0/g, " ").replace(/\r/g, "");
+          });
+
+          while (lines.length > 0 && lines[0].trim() === "") lines.shift();
+          while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
+
+          if (lines.length > 0) {
+            return lines.join("\n");
+          }
+        }
+      }
+
+      // 2. Check Ace editors
+      const aceEditors = Array.from(doc.querySelectorAll(".ace_editor, [class*='ace_editor']")).filter(isVisible);
+      for (const editor of aceEditors) {
+        const aceLines = Array.from(editor.querySelectorAll(".ace_text-layer .ace_line"));
+        if (aceLines.length > 0) {
+          const lines = aceLines.map(el => {
+            return (el.textContent || "").replace(/\u00a0/g, " ").replace(/\r/g, "");
+          });
+          while (lines.length > 0 && lines[0].trim() === "") lines.shift();
+          while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
+          if (lines.length > 0) {
+            return lines.join("\n");
+          }
+        }
+      }
+
+      // 3. Check CodeMirror
+      const cmEditors = Array.from(doc.querySelectorAll(".cm-editor, .CodeMirror")).filter(isVisible);
+      for (const editor of cmEditors) {
+        const cmLines = Array.from(editor.querySelectorAll(".cm-line, .CodeMirror-line"));
+        if (cmLines.length > 0) {
+          const lines = cmLines.map(el => {
+            return (el.textContent || "").replace(/\u00a0/g, " ").replace(/\r/g, "");
+          });
+          while (lines.length > 0 && lines[0].trim() === "") lines.shift();
+          while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
+          if (lines.length > 0) {
+            return lines.join("\n");
+          }
+        }
+      }
+
+      // 4. Standalone pre / code blocks outside questionRootEl
+      const standalonePre = Array.from(doc.querySelectorAll("pre code, pre.code-block, pre")).filter(el => {
+        if (!isVisible(el)) return false;
+        if (questionRootEl && questionRootEl.contains && questionRootEl.contains(el)) return false;
+        if (isInsideCodeEditor(el)) return false;
+        return true;
+      });
+      for (const el of standalonePre) {
+        const codeText = (el.textContent || "").replace(/\u00a0/g, " ").trim();
+        if (codeText.length >= 20 && (codeText.includes("def ") || codeText.includes("function") || codeText.includes("for ") || codeText.includes("class "))) {
+          return codeText;
+        }
+      }
+    } catch (_) {}
+
+    return "";
+  }
+
+  /**
+   * Locates the interactive drag handle element within a sortable row container.
+   * Checks explicit drag handle attributes, 6-dot grip icons, tabindex="0", and grab cursor.
+   */
+  function findDragHandleInRow(rowEl) {
+    if (!rowEl) return null;
+    try {
+      // 1. Direct explicit drag handle selectors/attributes
+      const explicitHandle = rowEl.querySelector(
+        "[data-rbd-drag-handle-draggable-id], [data-rfd-drag-handle-draggable-id], [data-drag-handle], [aria-roledescription*='sortable' i], [aria-roledescription*='drag' i], [class*='drag-handle' i], [class*='dragHandle' i], [class*='grip' i]"
+      );
+      if (explicitHandle) return explicitHandle;
+
+      // 2. First child containing SVG and no question text (e.g., 6-dot grip icon)
+      const allDivs = Array.from(rowEl.querySelectorAll("div, span, button, a"));
+      for (const d of allDivs) {
+        if (d.querySelector && d.querySelector("svg")) {
+          const txt = cleanText(d.textContent || "");
+          if (txt.length === 0 || /^[\u2630\u22EE\u22EF\u2800-\u28FF\:\:\s\d]+$/.test(txt)) {
+            return d;
+          }
+        }
+      }
+
+      // 3. Child with tabIndex === 0 or cursor: grab / move
+      for (const d of allDivs) {
+        if (d.tabIndex === 0 || d.getAttribute("tabindex") === "0") {
+          return d;
+        }
+        if (typeof window !== "undefined" && typeof window.getComputedStyle === "function") {
+          try {
+            const cursor = window.getComputedStyle(d).cursor;
+            if (cursor === "grab" || cursor === "move") return d;
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+
+    return rowEl;
+  }
+
+  /**
+   * Detects proctored coding practice environments (such as learning.ccbp.in/question/*
+   * with standalone interactive code editors and RUN/SUBMIT test runner buttons) where aggressive
+   * anti-cheat MutationObservers monitor for DOM alterations.
+   * NEVER flags a page if valid quiz options or MCQ practice headers exist.
+   */
+  function isProctoredCodingPage() {
+    if (typeof window === "undefined") return false;
+    try {
+      const doc = (typeof document !== "undefined") ? document : null;
+      if (doc && hasQuizOptionsOutsideEditor(doc)) {
+        return false;
+      }
+      const loc = window.location;
+      const pathname = (loc && loc.pathname) ? loc.pathname : "";
+      if (pathname.includes("/question/") || (pathname.includes("/coding/") && !pathname.includes("/practice"))) {
+        return true;
+      }
+      if (doc && doc.querySelector) {
+        const editor = doc.querySelector(".monaco-editor, .ace_editor, [data-editor='monaco']");
+        if (editor) {
+          const runBtns = Array.from(doc.querySelectorAll("button, [role='button']"))
+            .map(b => (b.innerText || b.textContent || "").trim().toLowerCase());
+          const hasRunCode = runBtns.some(t => /^(?:run|run\s*code|custom\s*input|compile\s*&\s*run)$/i.test(t));
+          if (hasRunCode) return true;
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  /**
    * Cleans text content: trims whitespace, collapses inner spaces,
    * and removes zero-width characters.
    */
@@ -97,6 +330,12 @@
     if (!text) return "";
     let s = String(text).trim();
 
+    // Strip grab handle symbols if present: e.g. "::" or "⋮⋮" or "☰"
+    s = s.replace(/^[:\u22EE\u22EF\u2800-\u28FF\u2630\s]+\s*/, "");
+
+    // 0. Slot numbers (1..8) followed by whitespace or directly attached to English letter/code tag
+    s = s.replace(/^[1-8]\s*(?=[A-Za-z`"'\<\(])/, "");
+
     // 1. Parenthesized/bracketed prefix: (A) 1/6, [B] option, (1) text
     s = s.replace(/^(?:\(\s*[A-Fa-f0-9]{1,2}\s*\)|\[\s*[A-Fa-f0-9]{1,2}\s*\])\s+/, "");
 
@@ -111,9 +350,18 @@
     // NEVER allow '-' or ':' as numeric delimiter (preserves '1 - 1/6', '1 - P(A)', '10 - 2', '1:6')
     // and requires trailing whitespace (preserves '1.5', '0.25')
     s = s.replace(/^[0-9]{1,2}[\.\)]\s+/, "");
+    s = s.replace(/^[0-9]{1,2}\s+(?![-+*/:])/i, "");
 
     // 4. Bullet symbols followed by whitespace
     s = s.replace(/^[\u2022\u25E6\u25AA\u2023]\s+/, "");
+
+    // Strip remaining grab handle if after digit: e.g. "1 :: foo" or "1 ⋮⋮ foo"
+    s = s.replace(/^[:\u22EE\u22EF\u2800-\u28FF\u2630\s]+\s*/, "");
+
+    // Strip secondary standalone slot number if preceded by icon: e.g. ":: 1 Update..."
+    s = s.replace(/^[1-8]\s*(?=[A-Za-z`"'\<\(])/, "");
+    s = s.replace(/^[0-9]{1,2}[\.\)]\s+/, "");
+    s = s.replace(/^[0-9]{1,2}\s+(?![-+*/:])/i, "");
 
     return s.trim();
   }
@@ -199,7 +447,7 @@
     function walk(node) {
       if (!node) return "";
       if (node.nodeType === 3) {
-        return node.nodeValue || "";
+        return node.nodeValue || node.textContent || "";
       }
       if (node.nodeType !== 1) {
         return "";
@@ -286,6 +534,56 @@
         return "";
       }
 
+      // Deep scan images: extract alt, title, aria-label, or filename for diagram / formula / photo questions and options
+      if (tag === "img") {
+        const alt = node.getAttribute ? (node.getAttribute("alt") || node.getAttribute("title") || node.getAttribute("aria-label")) : null;
+        if (alt && alt.trim()) {
+          return " [Image: " + cleanText(alt) + "] ";
+        }
+        const src = node.getAttribute ? (node.getAttribute("src") || node.getAttribute("data-src")) : null;
+        if (src && src.trim()) {
+          const parts = src.split("/").pop().split("?")[0];
+          if (parts && parts.length > 2 && !parts.includes("spacer") && !parts.includes("blank")) {
+            return " [Image: " + cleanText(parts) + "] ";
+          }
+        }
+        return " [Image] ";
+      }
+
+      // Deep scan SVG diagrams
+      if (tag === "svg") {
+        const titleEl = node.querySelector ? node.querySelector("title, desc") : null;
+        const ariaLabel = node.getAttribute ? node.getAttribute("aria-label") : null;
+        const svgText = titleEl ? (titleEl.textContent || titleEl.innerText) : (ariaLabel || "");
+        if (svgText && svgText.trim()) {
+          return " [Diagram: " + cleanText(svgText) + "] ";
+        }
+      }
+
+      // Deep scan table rows and cells into structured rows
+      if (tag === "tr") {
+        let rowText = "";
+        if (node.childNodes && node.childNodes.length > 0) {
+          for (let i = 0; i < node.childNodes.length; i++) {
+            rowText += walk(node.childNodes[i]);
+          }
+        }
+        return "\n| " + cleanText(rowText) + " |\n";
+      }
+      if (tag === "td" || tag === "th") {
+        let cellText = "";
+        if (node.childNodes && node.childNodes.length > 0) {
+          for (let i = 0; i < node.childNodes.length; i++) {
+            cellText += walk(node.childNodes[i]);
+          }
+        }
+        return " " + cleanText(cellText) + " |";
+      }
+
+      if (tag === "br") {
+        return "\n";
+      }
+
       // In KaTeX HTML fallback, if we encounter .msupsub, handle superscript/subscript prefix
       if (cls.includes("msupsub")) {
         const vlist = node.querySelector ? node.querySelector(".vlist") : null;
@@ -351,6 +649,11 @@
 
     // Post-submit explanation or feedback title headers
     if (t.length <= 40 && /^(?:explanation|solution|correct\s*answer|your\s*answer|detailed\s*solution|answer\s*key|hint|review(?:\s*questions)?)$/i.test(t)) {
+      return true;
+    }
+
+    // Sub-headings like "Drag and Drop to Order"
+    if (/^(?:drag\s*and\s*drop\s*to\s*order)$/i.test(t)) {
       return true;
     }
 
@@ -535,7 +838,20 @@
   function findClasslessOptionElements(scopeRoot, docRef) {
     const scope = scopeRoot || docRef || (typeof document !== "undefined" ? document : null);
     if (!scope) return [];
-    if (isQuizZyInternalElement(scope)) return [];
+    if (isQuizZyInternalElement(scope) || isInsideCodeEditor(scope)) return [];
+
+    // Disqualify immediately if scope contains a prominent text input/textarea (fill-in-the-box question)
+    const textInput = scope.querySelector("textarea, input[type='text'], input:not([type])");
+    if (textInput && isVisible(textInput)) {
+      const ph = (textInput.getAttribute("placeholder") || "").toLowerCase();
+      const isTextArea = textInput.tagName.toLowerCase() === "textarea";
+      if (isTextArea || ph.includes("answer") || ph.includes("enter") || ph.includes("type")) {
+        const hasRadiosOrBoxes = !!scope.querySelector("input[type='radio'], input[type='checkbox'], [role='radio'], [role='checkbox'], [data-rbd-draggable-id]");
+        if (!hasRadiosOrBoxes) {
+          return [];
+        }
+      }
+    }
 
     const candidateContainers = Array.from(scope.querySelectorAll("div, ul, ol")).filter(isVisible);
     const allDescendants = Array.from(scope.querySelectorAll("*"));
@@ -543,30 +859,32 @@
     for (let i = candidateContainers.length - 1; i >= 0; i--) {
       const container = candidateContainers[i];
       if (container === scope) continue;
-      if (isQuizZyInternalElement(container)) continue;
+      if (isQuizZyInternalElement(container) || isInsideCodeEditor(container)) continue;
 
-      const rawChildren = Array.from(container.children || []).filter(c => isVisible(c) && !isQuizZyInternalElement(c));
+      const rawChildren = Array.from(container.children || []).filter(c => isVisible(c) && !isQuizZyInternalElement(c) && !isInsideCodeEditor(c));
       const validChildren = rawChildren.filter(c => {
         const tag = (c.tagName || "").toLowerCase();
         return ["div", "li", "button", "label", "a", "span"].includes(tag);
       });
 
-      if (validChildren.length < 2 || validChildren.length > 6) continue;
+      // Filter out children that are action buttons, footers, headers or dividers
+      const optionRows = validChildren.filter(c => {
+        if (containsActionButtonOrFooter(c)) return false;
+        const tag = (c.tagName || "").toLowerCase();
+        if (tag === "hr" || tag === "br") return false;
+        const txt = getCleanVisibleText(c);
+        if (txt.length < 1 || txt.length > 500 || isHeaderOrNavText(txt)) return false;
+        return true;
+      });
 
-      // Disqualify immediately if ANY candidate child is or contains an action button or footer
-      const hasActionChild = validChildren.some(c => containsActionButtonOrFooter(c));
-      if (hasActionChild) continue;
+      if (optionRows.length < 2 || optionRows.length > 8) continue;
 
-      // All children should share the same tag name
-      const firstTag = (validChildren[0].tagName || "").toLowerCase();
-      const allSameTag = validChildren.every(c => (c.tagName || "").toLowerCase() === firstTag);
+      // All option rows should share the same tag name
+      const firstTag = (optionRows[0].tagName || "").toLowerCase();
+      const allSameTag = optionRows.every(c => (c.tagName || "").toLowerCase() === firstTag);
       if (!allSameTag) continue;
 
-      // Check each child has clean visible text between 1 and 300 characters
-      const texts = validChildren.map(c => getCleanVisibleText(c));
-      const validTexts = texts.every(t => t.length >= 1 && t.length <= 300 && !isHeaderOrNavText(t));
-      if (!validTexts) continue;
-
+      const texts = optionRows.map(c => getCleanVisibleText(c));
       const uniqueTexts = new Set(texts);
       if (uniqueTexts.size < 2) continue;
 
@@ -589,7 +907,7 @@
         continue;
       }
 
-      return validChildren;
+      return optionRows;
     }
 
     return [];
@@ -647,6 +965,7 @@
     const filtered = elements.filter(el => {
       if (!el || el.nodeType !== 1) return false;
       if (isQuizZyInternalElement(el)) return false;
+      if (isInsideCodeEditor(el)) return false;
       if (containsActionButtonOrFooter(el)) return false;
       const txt = cleanText(el.innerText || el.textContent || "");
       if (isHeaderOrNavText(txt)) return false;
@@ -725,11 +1044,334 @@
   }
 
   /**
+   * Dedicated read-only Coding Problem Extractor for Monaco/Ace and CCBP coding environments.
+   * Extracts unfolded starter code, language dropdown setting, and left pane problem statement.
+   * Performs ZERO DOM mutations.
+   */
+  /**
+   * Deterministically detects the active coding language across Monaco, Ace, dropdowns,
+   * toolbar indicators, or starter-code syntax signatures.
+   * Returns normalized language string: "cpp", "python", "java", or "javascript".
+   */
+  function detectCodingLanguage(docRef, starterCodeHint = "") {
+    const doc = docRef || (typeof document !== "undefined" ? document : null);
+    let detected = "";
+
+    // 1. Language dropdowns / selectors / comboboxes / badges
+    if (doc) {
+      const langSelectors = [
+        "select[name*='lang']",
+        "select.language-select",
+        ".language-selector select",
+        ".language-selector",
+        ".language-dropdown",
+        "[role='combobox'][aria-label*='lang' i]",
+        "[role='combobox'][data-testid*='lang' i]",
+        "[data-testid*='lang' i]",
+        "[data-mode-id]",
+        ".monaco-editor [data-mode-id]",
+        ".language-badge",
+        ".lang-badge",
+        "button[class*='lang']",
+        ".code-language-picker",
+        "[class*='language-select']",
+        "[class*='language-dropdown']",
+        "[class*='language']",
+        "[class*='lang']",
+        "select"
+      ];
+      for (const lSel of langSelectors) {
+        try {
+          const el = (typeof doc.querySelector === "function") ? doc.querySelector(lSel) : null;
+          const candidates = el ? [el] : ((typeof doc.querySelectorAll === "function") ? Array.from(doc.querySelectorAll(lSel)) : []);
+          for (const cand of candidates) {
+            const raw = (cand.value || (typeof cand.getAttribute === "function" ? (cand.getAttribute("data-mode-id") || cand.getAttribute("data-lang")) : "") || cand.textContent || "").trim();
+            const lower = raw.toLowerCase();
+            if (lower.includes("c++") || lower.includes("cpp")) { detected = "cpp"; break; }
+            if (lower.includes("java") && !lower.includes("script")) { detected = "java"; break; }
+            if (lower.includes("script") || lower.includes("js") || lower.includes("ts") || lower.includes("typescript")) { detected = "javascript"; break; }
+            if (lower.includes("py") || lower.includes("python")) { detected = "python"; break; }
+            if (lower === "c") { detected = "cpp"; break; }
+          }
+          if (detected) break;
+        } catch (_) {}
+      }
+    }
+
+    // 2. Monaco / Ace editor model language metadata
+    if (!detected && typeof window !== "undefined") {
+      try {
+        if (window.monaco && window.monaco.editor) {
+          if (typeof window.monaco.editor.getEditors === "function") {
+            const eds = window.monaco.editor.getEditors();
+            if (Array.isArray(eds) && eds.length > 0) {
+              const nonReadOnly = eds.filter(e => {
+                const rawOpts = (typeof e.getRawOptions === "function") ? e.getRawOptions() : {};
+                return !rawOpts.readOnly;
+              });
+              const pool = nonReadOnly.length > 0 ? nonReadOnly : eds;
+              const targetEd = pool[pool.length - 1];
+              if (targetEd && typeof targetEd.getModel === "function") {
+                const m = targetEd.getModel();
+                if (m && typeof m.getLanguageId === "function") {
+                  const mLang = (m.getLanguageId() || "").toLowerCase();
+                  if (mLang.includes("cpp") || mLang.includes("c++")) detected = "cpp";
+                  else if (mLang.includes("py")) detected = "python";
+                  else if (mLang.includes("java") && !mLang.includes("script")) detected = "java";
+                  else if (mLang.includes("javascript") || mLang.includes("js") || mLang.includes("typescript") || mLang.includes("ts")) detected = "javascript";
+                }
+              }
+            }
+          }
+          if (!detected && typeof window.monaco.editor.getModels === "function") {
+            const models = window.monaco.editor.getModels();
+            if (Array.isArray(models) && models.length > 0) {
+              const attached = models.filter(m => typeof m.isAttachedToEditor === "function" && m.isAttachedToEditor());
+              const targetM = attached.length > 0 ? attached[attached.length - 1] : models[models.length - 1];
+              if (targetM && typeof targetM.getLanguageId === "function") {
+                const mLang = (targetM.getLanguageId() || "").toLowerCase();
+                if (mLang.includes("cpp") || mLang.includes("c++")) detected = "cpp";
+                else if (mLang.includes("py")) detected = "python";
+                else if (mLang.includes("java") && !mLang.includes("script")) detected = "java";
+                else if (mLang.includes("javascript") || mLang.includes("js") || mLang.includes("typescript") || mLang.includes("ts")) detected = "javascript";
+              }
+            }
+          }
+        }
+      } catch (_) {}
+      if (!detected && window.ace) {
+        try {
+          const aceEl = doc ? doc.querySelector(".ace_editor") : null;
+          const aceEd = aceEl && window.ace.edit ? window.ace.edit(aceEl) : null;
+          if (aceEd && aceEd.session && aceEd.session.getMode) {
+            const modeId = (aceEd.session.getMode().$id || "").toLowerCase();
+            if (modeId.includes("c_cpp") || modeId.includes("cpp") || modeId.includes("c++")) detected = "cpp";
+            else if (modeId.includes("python")) detected = "python";
+            else if (modeId.includes("java") && !modeId.includes("javascript")) detected = "java";
+            else if (modeId.includes("javascript")) detected = "javascript";
+          }
+        } catch (_) {}
+      }
+    }
+
+    // 3. Syntax signatures in starter code
+    if (!detected && starterCodeHint) {
+      const codeStr = String(starterCodeHint);
+      if (/class\s+solution\s*:\s*|def\s+[a-zA-Z0-9_]+\s*\(|import\s+sys|self\b/i.test(codeStr)) {
+        detected = "python";
+      } else if (/public\s+class|public\s+static|System\.out\.println|ArrayList\s*<|String\[\]/i.test(codeStr)) {
+        detected = "java";
+      } else if (/#include\s*<|using\s+namespace\s+std|Node\s*\*|nullptr\b|std::|vector\s*<|\b(?:int|void|bool|double|float|long|long\s+long)\s+[a-zA-Z0-9_]+\s*\(/i.test(codeStr)) {
+        detected = "cpp";
+      } else if (/function\s+[a-zA-Z0-9_]+\s*\(|const\s+|let\s+|console\.log|module\.exports/i.test(codeStr)) {
+        detected = "javascript";
+      }
+    }
+
+    return detected || "python";
+  }
+
+  /**
+   * Dedicated read-only Coding Problem & Playground Extractor.
+   * Extracts unfolded starter code, active language, and left-pane problem statement.
+   * Guarantees ZERO DOM mutations.
+   */
+  function extractCodingProblem(docRef) {
+    const doc = docRef || (typeof document !== "undefined" ? document : null);
+    if (!doc) {
+      return { success: false, error: "No document available for coding extraction." };
+    }
+
+    // 1. Starter code extraction (Monaco/Ace unfolded models or DOM textarea)
+    let starterCode = "";
+    if (typeof window !== "undefined" && window.monaco && window.monaco.editor) {
+      try {
+        if (typeof window.monaco.editor.getEditors === "function") {
+          const eds = window.monaco.editor.getEditors();
+          if (Array.isArray(eds) && eds.length > 0) {
+            const nonReadOnly = eds.filter(e => {
+              const rawOpts = (typeof e.getRawOptions === "function") ? e.getRawOptions() : {};
+              return !rawOpts.readOnly;
+            });
+            const pool = nonReadOnly.length > 0 ? nonReadOnly : eds;
+            const targetEd = pool[pool.length - 1];
+            if (targetEd && typeof targetEd.getModel === "function") {
+              const m = targetEd.getModel();
+              if (m && typeof m.getValue === "function") {
+                starterCode = m.getValue();
+              }
+            }
+          }
+        }
+        if (!starterCode && typeof window.monaco.editor.getModels === "function") {
+          const models = window.monaco.editor.getModels();
+          if (Array.isArray(models) && models.length > 0) {
+            const attached = models.filter(m => typeof m.isAttachedToEditor === "function" && m.isAttachedToEditor());
+            const targetM = attached.length > 0 ? attached[attached.length - 1] : models[models.length - 1];
+            if (targetM && typeof targetM.getValue === "function") {
+              starterCode = targetM.getValue();
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    if (!starterCode) {
+      try {
+        const aceEl = doc.querySelector(".ace_editor");
+        if (aceEl) {
+          if (typeof window !== "undefined" && window.ace && typeof window.ace.edit === "function") {
+            try {
+              const aceEd = window.ace.edit(aceEl);
+              if (aceEd && typeof aceEd.getValue === "function") {
+                starterCode = aceEd.getValue();
+              }
+            } catch (_) {}
+          }
+          if (!starterCode && aceEl.env && aceEl.env.editor && typeof aceEl.env.editor.getValue === "function") {
+            starterCode = aceEl.env.editor.getValue();
+          } else if (!starterCode && typeof aceEl.getValue === "function") {
+            starterCode = aceEl.getValue();
+          } else if (!starterCode && (aceEl.innerText || aceEl.textContent)) {
+            starterCode = (aceEl.innerText || aceEl.textContent).trim();
+          }
+        }
+      } catch (_) {}
+    }
+    if (!starterCode) {
+      const starterSelectors = [
+        "textarea.monaco-mouse-cursor-text",
+        "textarea[name='code']",
+        "textarea#code",
+        ".ace_text-input",
+        "textarea.code-input",
+        "textarea"
+      ];
+      for (const sSel of starterSelectors) {
+        const el = doc.querySelector(sSel);
+        if (el && (el.value || el.textContent)) {
+          const val = (el.value || el.textContent).trim();
+          if (val && !val.includes("quizzy")) {
+            starterCode = val;
+            break;
+          }
+        }
+      }
+    }
+
+    // 2. Language detection
+    const detectedLanguage = detectCodingLanguage(doc, starterCode);
+
+    // 3. Problem statement / description extraction (left pane)
+    const descContainers = [
+      "[class*='problem-statement']",
+      "[class*='question-description']",
+      "[class*='problem-description']",
+      "[class*='coding-question']",
+      "[class*='instructions']",
+      "[class*='instruction']",
+      "[class*='question-detail']",
+      "[class*='problem-detail']",
+      ".description",
+      ".problem-statement",
+      ".content-panel",
+      "main",
+      "article"
+    ];
+
+    let descEl = null;
+    for (const dSel of descContainers) {
+      const el = doc.querySelector(dSel);
+      if (el && isVisible(el)) {
+        const hasEditor = (typeof el.querySelector === "function") ? el.querySelector(".monaco-editor, .ace_editor") : false;
+        if (!hasEditor) {
+          descEl = el;
+          break;
+        }
+      }
+    }
+
+    let problemText = "";
+    if (descEl) {
+      const blocks = (typeof descEl.querySelectorAll === "function")
+        ? Array.from(descEl.querySelectorAll("h1, h2, h3, h4, p, pre, code, li, div")).filter(isVisible)
+        : [];
+      const parts = [];
+      const seen = new Set();
+      for (const b of blocks) {
+        if (b && typeof b.closest === "function" && b.closest(".monaco-editor, .ace_editor, #__quizzy_hud_host__")) continue;
+        if (b.children && b.children.length > 0 && b.tagName && b.tagName.toLowerCase() !== "pre" && b.tagName.toLowerCase() !== "code") continue;
+        const txt = getCleanVisibleText(b, b.tagName && (b.tagName.toLowerCase() === "pre" || b.tagName.toLowerCase() === "code"));
+        if (txt && txt.length >= 2 && !seen.has(txt)) {
+          seen.add(txt);
+          parts.push(txt);
+        }
+      }
+      if (parts.length > 0) {
+        problemText = parts.join("\n\n").trim();
+      } else {
+        problemText = getCleanVisibleText(descEl).trim();
+      }
+    }
+
+    if (!problemText) {
+      const outsideBlocks = Array.from(doc.querySelectorAll("h1, h2, h3, h4, p, pre, code")).filter((el) => {
+        return isVisible(el) && !el.closest(".monaco-editor, .ace_editor, #__quizzy_hud_host__, header, nav");
+      });
+      const parts = [];
+      for (const b of outsideBlocks) {
+        const txt = getCleanVisibleText(b, b.tagName.toLowerCase() === "pre" || b.tagName.toLowerCase() === "code");
+        if (txt && txt.length >= 3 && !parts.includes(txt)) {
+          parts.push(txt);
+        }
+      }
+      problemText = parts.join("\n\n").trim();
+    }
+
+    if (!problemText && doc.body) {
+      const rawBody = (doc.body.innerText || doc.body.textContent || "").trim();
+      if (rawBody) {
+        problemText = rawBody.replace(/^CODING PRACTICE\s*/i, "").trim();
+      }
+    }
+
+    // Extract Title specifically if present
+    let title = "";
+    const titleEl = doc.querySelector("h1, h2, .problem-title, [class*='problem-title'], [class*='question-title']");
+    if (titleEl && isVisible(titleEl)) {
+      title = getCleanVisibleText(titleEl).trim();
+    }
+
+    return {
+      success: true,
+      subject: "Coding Practice",
+      q_type: "code",
+      title: title || "Coding Practice Problem",
+      question: problemText || "Coding Practice Problem",
+      language: detectedLanguage,
+      starter_code: starterCode,
+      options: [],
+      optionSelectors: [],
+      meta: {
+        url: (typeof window !== "undefined" && window.location) ? window.location.href : "",
+        timestamp: Date.now(),
+        is_coding_question: true,
+        language: detectedLanguage,
+        starter_code: starterCode,
+        coding_mode: true
+      }
+    };
+  }
+
+  function extractCodingQuestionFromDom(docRef) {
+    return extractCodingProblem(docRef);
+  }
+
+  /**
    * Pure read-only DOM extraction function.
    * Performs ZERO mutations on the host page DOM.
    * 
    * @param {Object} customSelectors - User-specified CSS selectors.
-   * @param {string} forcedQType - "auto" | "mcq" | "order" | "text"
+   * @param {string} forcedQType - "auto" | "mcq" | "order" | "text" | "code"
    * @returns {Object} Extracted payload { success, subject, q_type, question, options, meta }
    */
   function extractQuizFromDom(customSelectors = {}, forcedQType = "auto") {
@@ -792,6 +1434,17 @@
       }
     }
 
+    // Coding Practice Mode Detection (q_type: "code" on learning.ccbp.in/question/* or Monaco/Ace editor pages)
+    const hasQuiz = hasQuizOptionsOutsideEditor(doc);
+    const isCodingMode = (forcedQType === "code") || (!hasQuiz && forcedQType === "auto" && isProctoredCodingPage());
+    if (isCodingMode) {
+      const codeExtract = extractCodingQuestionFromDom(doc);
+      if (codeExtract && codeExtract.success) {
+        if (subject && subject !== "General") codeExtract.subject = subject;
+        return codeExtract;
+      }
+    }
+
     // 2. DISCOVER CARD CONTAINER AND OPTIONS
     const quizCard = findQuizCard(doc);
 
@@ -800,7 +1453,7 @@
     let isDraggableOrder = false;
     let optionElements = [];
     if (custom.optionsSelector) {
-      const found = Array.from(doc.querySelectorAll(custom.optionsSelector)).filter(isVisible);
+      const found = Array.from(doc.querySelectorAll(custom.optionsSelector)).filter(el => isVisible(el) && !isInsideCodeEditor(el));
       if (found.length >= 2) {
         optionElements = found;
         matchedSelectors.options = custom.optionsSelector;
@@ -810,7 +1463,7 @@
     // React / Web App Radio Row Detection
     // Supports CSS-hidden <input type="radio"> (e.g. display:none or opacity:0) with visible label/card wrappers
     if (optionElements.length === 0) {
-      const allRadios = Array.from(doc.querySelectorAll("input[type='radio']"));
+      const allRadios = Array.from(doc.querySelectorAll("input[type='radio']")).filter(r => !isInsideCodeEditor(r));
       const validRows = [];
       for (const r of allRadios) {
         const lbl = r.closest("label") || (r.id ? doc.querySelector(`label[for="${r.id}"]`) : null);
@@ -825,18 +1478,54 @@
       }
     }
 
-    // Heuristics for options if not found via radio inputs
+    // React / Web App Checkbox Row Detection (Multi-select questions with several correct answers)
+    let isCheckboxGroup = false;
+    if (optionElements.length === 0) {
+      const allCheckboxes = Array.from(doc.querySelectorAll("input[type='checkbox'], [role='checkbox']")).filter(cb => !isQuizZyInternalElement(cb) && !isInsideCodeEditor(cb));
+      const validRows = [];
+      for (const cb of allCheckboxes) {
+        const lbl = cb.closest("label") || (cb.id ? doc.querySelector(`label[for="${cb.id}"]`) : null);
+        const row = lbl || cb.closest("[class*='option'], [class*='choice'], [class*='checkbox'], li, tr") || cb.parentElement;
+        if (isRadioOrOptionVisible(cb, row)) {
+          validRows.push(row || cb);
+        }
+      }
+      if (validRows.length >= 2 && validRows.length <= 10) {
+        optionElements = validRows;
+        matchedSelectors.options = "input[type='checkbox']";
+        isCheckboxGroup = true;
+      }
+    }
+
+    // Heuristics for options if not found via radio or checkbox inputs
     if (optionElements.length === 0) {
       const optionGroupHeuristics = [
         "[data-quiz-option]",
         ".quiz-option",
         ".option-item",
+        "[data-rbd-draggable-id]",
+        "[data-rbd-drag-handle-draggable-id]",
+        "[data-rfd-draggable-id]",
+        "[data-rfd-drag-handle-draggable-id]",
+        "[data-drag-handle]",
+        "[aria-roledescription*='sortable' i]",
+        "[aria-roledescription*='drag' i]",
         ".draggable-item",
         "[draggable='true']",
+        "[class*='grip' i]",
+        "[class*='drag-handle' i]",
+        "[class*='dragHandle' i]",
+        ".sortable-item",
+        "[class*='sortable-item' i]",
+        "[class*='sortableItem' i]",
+        "[class*='reorder' i]",
         "[role='option']",
         "[role='radio']",
+        "[role='checkbox']",
         "[class*='radio-item']",
         "[class*='radioItem']",
+        "[class*='checkbox-item']",
+        "[class*='checkboxItem']",
         "[class*='option-item']",
         "[class*='optionItem']",
         "[class*='choice-item']",
@@ -852,11 +1541,26 @@
       ];
 
       for (const sel of optionGroupHeuristics) {
-        const matches = Array.from(doc.querySelectorAll(sel)).filter(isVisible);
+        const matches = Array.from(doc.querySelectorAll(sel)).filter(el => isVisible(el) && !isInsideCodeEditor(el));
         if (matches.length >= 2 && matches.length <= 10) {
-          optionElements = matches;
-          matchedSelectors.options = sel;
-          break;
+          // If elements are handles/inputs/icons (e.g. grip, drag-handle, svg, radio, checkbox), resolve to row roots
+          const isHandleOrInput = matches.some(m => {
+            const tag = (m.tagName || "").toLowerCase();
+            const cls = (m.className || "").toLowerCase();
+            return tag === "input" || tag === "svg" || cls.includes("grip") || cls.includes("handle") || cls.includes("icon");
+          });
+          const candidateElements = isHandleOrInput
+            ? deduplicateOptionElements(matches.map(m => resolveOptionRowRoot(m, matches)))
+            : matches;
+          if (candidateElements.length >= 2 && candidateElements.length <= 10) {
+            const texts = candidateElements.map(el => getCleanVisibleText(el));
+            const validTexts = texts.filter(t => t.length >= 1 && !isHeaderOrNavText(t));
+            if (validTexts.length >= 2) {
+              optionElements = candidateElements;
+              matchedSelectors.options = sel;
+              break;
+            }
+          }
         }
       }
     }
@@ -868,6 +1572,57 @@
         optionElements = classless;
         matchedSelectors.options = "classless-styled-options";
       }
+    }
+
+    // Deep Scan Fallback 1: Shadow DOM option scanning
+    if (optionElements.length === 0 && doc.querySelectorAll) {
+      try {
+        const customHosts = Array.from(doc.querySelectorAll("*")).filter(el => el.shadowRoot && !isQuizZyInternalElement(el));
+        for (const host of customHosts) {
+          const sRoot = host.shadowRoot;
+          if (!sRoot) continue;
+          const sRadios = Array.from(sRoot.querySelectorAll("input[type='radio'], input[type='checkbox'], [role='radio'], [role='option'], .option-item, .quiz-option"));
+          if (sRadios.length >= 2) {
+            optionElements = sRadios;
+            matchedSelectors.options = "shadow-root-options";
+            break;
+          }
+        }
+      } catch (_) {}
+    }
+
+    // Deep Scan Fallback 2: Accessible same-origin iframe option scanning
+    if (optionElements.length === 0 && doc.querySelectorAll) {
+      try {
+        const iframes = Array.from(doc.querySelectorAll("iframe"));
+        for (const frame of iframes) {
+          try {
+            const fDoc = frame.contentDocument || (frame.contentWindow ? frame.contentWindow.document : null);
+            if (fDoc && fDoc.querySelectorAll) {
+              const fOptions = Array.from(fDoc.querySelectorAll("input[type='radio'], input[type='checkbox'], [role='radio'], [role='option'], .option-item, .quiz-option")).filter(isVisible);
+              if (fOptions.length >= 2) {
+                optionElements = fOptions;
+                matchedSelectors.options = "iframe-options";
+                break;
+              }
+            }
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }
+
+    // Deep Scan Fallback 3: Image / diagram card options (e.g. visual choices with images)
+    if (optionElements.length === 0 && doc.querySelectorAll) {
+      try {
+        const imageCards = Array.from(doc.querySelectorAll("[class*='option'] img, [class*='choice'] img, .card img, label img, [class*='answer'] img"))
+          .map(img => img.closest("label, [class*='option'], [class*='choice'], .card, div") || img.parentElement)
+          .filter(el => el && isVisible(el));
+        const uniqueImageCards = deduplicateOptionElements(imageCards);
+        if (uniqueImageCards.length >= 2 && uniqueImageCards.length <= 10) {
+          optionElements = uniqueImageCards;
+          matchedSelectors.options = "image-card-options";
+        }
+      } catch (_) {}
     }
 
     // 3. EXTRACT QUESTION TEXT (Supports multi-block, code snippets, declarative prompts, ignores explanations)
@@ -907,6 +1662,7 @@
 
       for (const card of cardContainers) {
         if (isExplanationOrFeedback(card)) continue;
+        if (!card || typeof card.querySelectorAll !== "function") continue;
 
         const allDescendants = Array.from(card.querySelectorAll("*"));
         const firstOptIndex = firstOpt ? allDescendants.indexOf(firstOpt) : -1;
@@ -958,7 +1714,7 @@
           const txt = getCleanVisibleText(el, isCode);
           if (txt.length >= 3 && !isHeaderOrNavText(txt)) {
             // Exclude header boilerplate
-            if (!/^(?:mcq\s*practice|practice\s*instructions|end\s*practice|score\s*:|questions?\s*attempted)/i.test(txt)) {
+            if (!/^(?:mcq\s*practice|practice\s*instructions|end\s*practice|score\s*:|questions?\s*attempted|drag\s+and\s+drop\s+to\s+order|drag\s+to\s+reorder)/i.test(txt)) {
               selectedBlocks.push(el);
             }
           }
@@ -1076,21 +1832,52 @@
       }
     }
 
+    // Filter out instruction banners ("Drag and Drop to Order") or standalone slot badges
+    optionElements = optionElements.filter((el) => {
+      const txt = cleanText(getCleanVisibleText(el) || "");
+      if (/^(?:drag\s+and\s+drop\s+to\s+order|drag\s+to\s+reorder)$/i.test(txt)) {
+        return false;
+      }
+      // Only filter single digits if el is an explicit slot/badge indicator without input controls
+      if (/^[1-8]$/.test(txt)) {
+        const hasInput = !!(el.querySelector && el.querySelector("input, [role='radio'], [role='checkbox']"));
+        const isSlotBadge = !!(el.className && typeof el.className === "string" && /(?:slot|step|badge|index)/i.test(el.className));
+        if (!hasInput && isSlotBadge) {
+          return false;
+        }
+      }
+      return true;
+    });
+
     // Check if option elements indicate drag-and-drop / ordering
     if (optionElements.length > 0) {
       isDraggableOrder = optionElements.some((el) => {
-        const isDrag = el.getAttribute("draggable") === "true" || el.draggable === true;
+        const isDrag = el.getAttribute && (el.getAttribute("draggable") === "true" || el.draggable === true);
         const className = String(el.className || "").toLowerCase();
-        const hasDragClass = className.includes("drag") || className.includes("sort") || className.includes("order");
-        return isDrag || hasDragClass;
+        const hasDragClass = /\b(draggable|drag-item|sortable|sortable-item|order-item|grip)\b/i.test(className);
+        const hasRbd = (el.hasAttribute && (el.hasAttribute("data-rbd-draggable-id") || el.hasAttribute("data-rfd-draggable-id"))) ||
+          !!(el.querySelector && el.querySelector("[data-rbd-drag-handle-draggable-id], [data-rfd-drag-handle-draggable-id], [data-rbd-drag-handle-context-id], [data-drag-handle], [class*='drag-handle'], [class*='dragHandle'], [class*='grip' i]"));
+        return isDrag || hasDragClass || hasRbd;
       });
+
+      const cardText = (quizCard ? (quizCard.innerText || quizCard.textContent || "") : (doc.body ? (doc.body.innerText || doc.body.textContent || "") : ""));
+      if (/drag\s+and\s+drop\s+to\s+order|drag\s+to\s+reorder|rearrange\s+the\s+following|arrange\s+the\s+following.*in\s+(?:the\s+)?correct\s+order|put\s+the\s+following.*in\s+order/i.test(cardText) ||
+          /drag\s+and\s+drop\s+to\s+order|drag\s+to\s+reorder|rearrange\s+the\s+following|arrange\s+the\s+following.*in\s+(?:the\s+)?correct\s+order|put\s+the\s+following.*in\s+order/i.test(question)) {
+        isDraggableOrder = true;
+      }
 
       options = optionElements.map((el) => {
         const hasCode = !!(el.querySelector && el.querySelector("pre, code")) || (el.tagName && ["pre", "code"].includes(el.tagName.toLowerCase()));
         const raw = getCleanVisibleText(el, hasCode);
         const normalized = normalizeOptionWhitespace(raw, hasCode);
         return normalized || raw;
-      }).filter((t) => t.length > 0);
+      }).filter((t) => {
+        if (!t || t.length === 0) return false;
+        if (/^(?:drag\s+and\s+drop\s+to\s+order|drag\s+to\s+reorder)$/i.test(t.trim())) {
+          return false;
+        }
+        return true;
+      });
     }
 
     // Check for free text input
@@ -1104,6 +1891,10 @@
         "input.quiz-input",
         "input.fill-blank",
         "textarea.quiz-input",
+        "textarea[placeholder*='answer' i]",
+        "textarea[placeholder*='enter' i]",
+        "input[placeholder*='answer' i]",
+        "input[placeholder*='enter' i]",
         ".question-container input[type='text']",
         ".question-container textarea",
         "input[type='text']:not([aria-hidden='true'])",
@@ -1111,10 +1902,24 @@
       ];
       for (const sel of inputHeuristics) {
         const el = doc.querySelector(sel);
-        if (el && isVisible(el)) {
+        if (el && isVisible(el) && !isQuizZyInternalElement(el)) {
           textInputEl = el;
           matchedSelectors.textInput = sel;
           break;
+        }
+      }
+    }
+
+    // If textInputEl is clearly present (e.g. textarea with placeholder 'Enter your answer')
+    // and no true radios/checkboxes/drag handles exist, disqualify spurious classless options
+    if (textInputEl && isVisible(textInputEl)) {
+      const ph = (textInputEl.getAttribute("placeholder") || "").toLowerCase();
+      const isTextArea = textInputEl.tagName.toLowerCase() === "textarea";
+      if (isTextArea || ph.includes("answer") || ph.includes("enter")) {
+        const hasTrueOptions = isCheckboxGroup || matchedSelectors.options === "input[type='radio']" || isDraggableOrder;
+        if (!hasTrueOptions) {
+          options = [];
+          optionElements = [];
         }
       }
     }
@@ -1126,9 +1931,44 @@
       if (options.length === 0 && textInputEl) {
         qType = "text";
       } else if (options.length >= 2) {
-        const orderKeywordRegex = /\b(arrange|order|sequence|chronological|sort|first to last|earliest to latest|rank)\b/i;
-        if (isDraggableOrder || orderKeywordRegex.test(question)) {
+        // Exclude common MCQ phrases that contain the word "order"
+        const isNotOrderPhrase = /\b(not(?:\s+necessarily)?\s+in(?:\s+the)?\s+same\s+order|in\s+order\s+to|order\s+of\s+magnitude|out\s+of\s+order|first\s+order|second\s+order|order\s+of\s+(?:operations|reaction|execution))\b/i.test(question);
+
+        // Check if options contain standard MCQ choices like "None of these", "All of the above"
+        const hasMcqOnlyOption = options.some((opt) => {
+          const l = String(opt || "").toLowerCase().trim();
+          return l === "none of these" || l === "none of the above" || l === "all of the above" || l === "all of these" || l.startsWith("both ") || l.startsWith("neither ");
+        });
+
+        // Check if elements are radio buttons or inside a radiogroup
+        const hasRadioInputs = matchedSelectors.options === "input[type='radio']" ||
+          (optionElements && optionElements.some((el) => el.querySelector && el.querySelector("input[type='radio'], [role='radio']")));
+
+        // Check for checkbox / multi-select indicators (square checkboxes)
+        const hasCheckboxInputs = isCheckboxGroup || matchedSelectors.options === "input[type='checkbox']" ||
+          (optionElements && optionElements.some((el) => el.querySelector && el.querySelector("input[type='checkbox'], [role='checkbox'], [class*='checkbox' i]")));
+        const multiDirectiveRegex = /\b(which of the following are|select all|choose all|multiple answers|more than one|all that apply)\b/i;
+
+        const orderDirectiveRegex = /\b(arrange|chronological|sort|first to last|earliest to latest|rank|rearrange|put\s+(?:the\s+following\s+)?in\s+order|correct\s+(?:order|sequence)|drag\s+and\s+drop\s+to\s+order|drag\s+to\s+reorder)\b/i;
+        const generalOrderWord = /\border\b/i.test(question) && !isNotOrderPhrase;
+
+        const cardText = (quizCard ? (quizCard.innerText || quizCard.textContent || "") : (doc.body ? (doc.body.innerText || doc.body.textContent || "") : ""));
+        const hasOrderBanner = /drag\s+and\s+drop\s+to\s+order|drag\s+to\s+reorder|rearrange\s+the\s+following|arrange\s+the\s+following.*in\s+(?:the\s+)?correct\s+order|put\s+the\s+following.*in\s+order/i.test(cardText) ||
+                               /drag\s+and\s+drop\s+to\s+order|drag\s+to\s+reorder|rearrange\s+the\s+following|arrange\s+the\s+following.*in\s+(?:the\s+)?correct\s+order|put\s+the\s+following.*in\s+order/i.test(question);
+        const hasDragHandles = optionElements.some(el => {
+          return !!(el.querySelector && el.querySelector("svg, [class*='grip' i], [class*='drag' i], [data-rbd-drag-handle-draggable-id], [data-rfd-drag-handle-draggable-id], [data-drag-handle]"));
+        });
+        const hasSlotNumbers = optionElements.some(el => {
+          const t = cleanText(el.innerText || el.textContent || "");
+          return /^[1-8][\.\:\s]/.test(t) || !!(el.querySelector && el.querySelector("[class*='slot' i], [class*='index' i], [class*='number' i], [class*='badge' i]"));
+        });
+
+        const isTrueOrdering = (isDraggableOrder || hasOrderBanner || (hasDragHandles && hasSlotNumbers) || orderDirectiveRegex.test(question) || generalOrderWord) && !hasMcqOnlyOption && !hasRadioInputs && !hasCheckboxInputs;
+
+        if (isTrueOrdering) {
           qType = "order";
+        } else if (hasCheckboxInputs || multiDirectiveRegex.test(question)) {
+          qType = "multi";
         } else {
           qType = "mcq";
         }
@@ -1139,6 +1979,14 @@
       }
     }
 
+    // Clean any trailing or leading Drag and Drop to Order banner text from question stem
+    if (question) {
+      question = question
+        .replace(/\n\s*drag\s+and\s+drop\s+to\s+order\s*$/i, "")
+        .replace(/^\s*drag\s+and\s+drop\s+to\s+order\s*\n/i, "")
+        .trim();
+    }
+
     // Validation
     if (!question) {
       return {
@@ -1147,7 +1995,7 @@
       };
     }
 
-    if (qType in { mcq: 1, order: 1 } && options.length < 2) {
+    if (qType in { mcq: 1, order: 1, multi: 1 } && options.length < 2) {
       if (textInputEl) {
         qType = "text";
       } else {
@@ -1159,7 +2007,22 @@
       }
     }
 
+    // Split-pane reference code context extraction (e.g. Monaco/Ace/CodeMirror on learning.ccbp.in/primitive-coding/practice)
+    const splitPaneCode = extractSplitPaneCodeContext(quizCard, doc);
+    let codeContext = "";
+    if (splitPaneCode && splitPaneCode.trim().length > 0) {
+      const trimmedCode = splitPaneCode.trim();
+      codeContext = trimmedCode;
+      if (!question.includes(trimmedCode)) {
+        question = `${question}\n\nReference Code:\n\`\`\`\n${trimmedCode}\n\`\`\``;
+      }
+    }
+
     const optionSelectors = (Array.isArray(optionElements) ? optionElements : []).map(el => getElementCssPath(el));
+    const dragHandleSelectors = (Array.isArray(optionElements) ? optionElements : []).map(el => {
+      const handle = findDragHandleInRow(el);
+      return getElementCssPath(handle);
+    });
 
     const result = {
       success: true,
@@ -1168,12 +2031,15 @@
       question: question,
       options: options,
       optionSelectors: optionSelectors,
+      dragHandleSelectors: dragHandleSelectors,
       meta: {
         url: (typeof window !== "undefined" && window.location) ? window.location.href : "",
         timestamp: Date.now(),
         matched_selectors: matchedSelectors,
         options_count: options.length,
-        option_selectors: optionSelectors
+        option_selectors: optionSelectors,
+        drag_handle_selectors: dragHandleSelectors,
+        code_context: codeContext || undefined
       }
     };
 
@@ -1194,9 +2060,13 @@
    */
   function applyDomHighlight(payload = {}) {
     if (typeof document === "undefined") return { success: false, error: "No document" };
+    if (isProctoredCodingPage()) {
+      return { success: false, skipped: true, reason: "Zero DOM mutation on coding practice routes." };
+    }
 
     const STYLE_ID = "quizzy-optin-highlight-styles";
     const WINNER_CLASS = "quizzy-optin-winner";
+    const BADGE_CLASS = "quizzy-order-target-badge";
 
     // 1. Remove previous highlights
     const existingStyle = document.getElementById(STYLE_ID);
@@ -1207,6 +2077,8 @@
     previousElements.forEach((el) => {
       el.classList.remove(WINNER_CLASS);
     });
+    const previousBadges = document.querySelectorAll("." + BADGE_CLASS);
+    previousBadges.forEach((b) => b.remove());
 
     if (payload.remove) {
       return { success: true, removed: true };
@@ -1257,6 +2129,31 @@
       }
     }
 
+    // 4. Highlight target order badges (#1, #2, #3, ...) for ordering questions
+    if (Array.isArray(payload.target_order_badges) && payload.target_order_badges.length > 0) {
+      const elements = Array.from(document.querySelectorAll(
+        "[data-rbd-draggable-id], [data-rfd-draggable-id], .draggable-item, .sortable-item, .order-item, [role='option'], [draggable='true']"
+      )).filter(isVisible);
+
+      for (let i = 0; i < payload.target_order_badges.length; i++) {
+        const targetText = payload.target_order_badges[i];
+        const badgeNum = `#${i + 1}`;
+        for (const el of elements) {
+          const t = cleanText(stripDecorativePrefix(el.innerText || el.textContent || "")).toLowerCase();
+          const cleanTgt = cleanText(stripDecorativePrefix(targetText)).toLowerCase();
+          if (t === cleanTgt || (t && cleanTgt && (t.includes(cleanTgt) || cleanTgt.includes(t)))) {
+            const badge = document.createElement("span");
+            badge.className = BADGE_CLASS;
+            badge.textContent = badgeNum;
+            badge.style.cssText = "display:inline-block; margin-left:8px; padding:2px 8px; font-weight:700; font-size:12px; background:#3B82F6; color:#FFFFFF; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.3); vertical-align:middle;";
+            el.appendChild(badge);
+            break;
+          }
+        }
+      }
+      return { success: true, highlighted_badges: true };
+    }
+
     return { success: true, highlighted: false };
   }
 
@@ -1277,8 +2174,16 @@
     deduplicateOptionElements,
     resolveOptionRowRoot,
     extractQuizFromDom,
+    extractCodingQuestionFromDom,
+    extractCodingProblem,
+    detectCodingLanguage,
     applyDomHighlight,
-    isQuizZyInternalElement
+    isProctoredCodingPage,
+    isQuizZyInternalElement,
+    isInsideCodeEditor,
+    hasQuizOptionsOutsideEditor,
+    extractSplitPaneCodeContext,
+    findDragHandleInRow
   };
 
   if (typeof window !== "undefined") {

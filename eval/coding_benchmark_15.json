@@ -1,0 +1,167 @@
+[
+  {
+    "id": 1,
+    "title": "Deletion At Head - Doubly Linked List",
+    "subject": "Coding Practice",
+    "q_type": "code",
+    "language": "cpp",
+    "starter_code": "/*\nstruct Node {\n    int data;\n    Node* next;\n    Node* prev;\n};\n*/\nclass solution {\n  public:\n    Node* deleteHead(Node* head) {\n        // Write your code here\n    }\n};",
+    "question": "Deletion At Head - Doubly Linked List\n\nGiven the head of a doubly linked list, remove the node at the head of the list and return the head of the modified list.\n\nYour Task:\nYou don't need to read input or print anything. Complete the function deleteHead(head) that takes the head of the doubly linked list as a parameter and returns the new head.\n\nExample 1:\nInput: head = 5 <-> 7 <-> 3 <-> 1\nOutput: 7 <-> 3 <-> 1\nExplanation: The original head node with value 5 is deleted, so the new head is node 7.\n\nExample 2:\nInput: head = 10\nOutput: NULL\nExplanation: Only one node in list; deleting it leaves an empty list.\n\nConstraints:\n1 <= Number of nodes <= 10^5\n1 <= Node.data <= 10^6",
+    "expected_signature": "deleteHead",
+    "expected_class": "solution"
+  },
+  {
+    "id": 2,
+    "title": "Insertion At Tail - Doubly Linked List",
+    "subject": "Coding Practice",
+    "q_type": "code",
+    "language": "cpp",
+    "starter_code": "/*\nstruct Node {\n    int data;\n    Node* next;\n    Node* prev;\n};\n*/\nclass solution {\n  public:\n    Node* insertAtTail(Node* head, int k) {\n        // Write your code here\n    }\n};",
+    "question": "Insertion At Tail - Doubly Linked List\n\nGiven the head of a doubly linked list and an integer k, insert a new node with value k at the tail (end) of the doubly linked list and return the head.\n\nYour Task:\nComplete the function insertAtTail(head, k) which takes head and k as arguments and returns the head of the updated doubly linked list.\n\nExample 1:\nInput: head = 1 <-> 2 <-> 3, k = 4\nOutput: 1 <-> 2 <-> 3 <-> 4\n\nConstraints:\n0 <= Number of nodes <= 10^4\n-10^4 <= k <= 10^4",
+    "expected_signature": "insertAtTail",
+    "expected_class": "solution"
+  },
+  {
+    "id": 3,
+    "title": "Reverse a Singly Linked List",
+    "subject": "Coding Practice",
+    "q_type": "code",
+    "language": "cpp",
+    "starter_code": "/*\nstruct Node {\n    int data;\n    Node* next;\n};\n*/\nclass solution {\n  public:\n    Node* reverseList(Node* head) {\n        // Write your code here\n    }\n};",
+    "question": "Reverse a Singly Linked List\n\nGiven the head of a singly linked list, reverse the list and return the head of the reversed list.\n\nYour Task:\nComplete the function reverseList(head) which takes the head of the list as input and returns the new head.\n\nExample 1:\nInput: 1 -> 2 -> 3 -> 4 -> NULL\nOutput: 4 -> 3 -> 2 -> 1 -> NULL\n\nConstraints:\n0 <= Number of nodes <= 5000\n-5000 <= Node.data <= 5000",
+    "expected_signature": "reverseList",
+    "expected_class": "solution"
+  },
+  {
+    "id": 4,
+    "title": "Detect Cycle in a Linked List",
+    "subject": "Coding Practice",
+    "q_type": "code",
+    "language": "python",
+    "starter_code": "# Definition for singly-linked list.\n# class ListNode:\n#     def __init__(self, x):\n#         self.val = x\n#         self.next = None\n\nclass Solution:\n    def hasCycle(self, head) -> bool:\n        # Write your code here\n        pass",
+    "question": "Detect Cycle in a Linked List\n\nGiven head, the head of a linked list, determine if the linked list has a cycle in it.\nThere is a cycle in a linked list if there is some node in the list that can be reached again by continuously following the next pointer.\n\nYour Task:\nComplete hasCycle(self, head) which returns True if there is a cycle, otherwise False.\n\nExample 1:\nInput: head = [3,2,0,-4], pos = 1\nOutput: true\n\nConstraints:\nThe number of the nodes in the list is in the range [0, 10^4].",
+    "expected_signature": "hasCycle",
+    "expected_class": "Solution"
+  },
+  {
+    "id": 5,
+    "title": "Largest Subarray Sum - Kadane's Algorithm",
+    "subject": "Coding Practice",
+    "q_type": "code",
+    "language": "python",
+    "starter_code": "def maxSubArraySum(arr, N):\n    # Write your code here\n    pass",
+    "question": "Largest Subarray Sum - Kadane's Algorithm\n\nGiven an array arr of N integers. Find the contiguous sub-array with the maximum sum and return its sum.\n\nYour Task:\nComplete the function maxSubArraySum(arr, N) which takes the array arr and its size N as inputs and returns the maximum subarray sum.\n\nExample 1:\nInput: N = 5, arr = [1, 2, 3, -2, 5]\nOutput: 9\nExplanation: Max sub-array sum is 9 of elements (1, 2, 3, -2, 5)\n\nConstraints:\n1 <= N <= 10^6\n-10^7 <= arr[i] <= 10^7",
+    "expected_signature": "maxSubArraySum",
+    "expected_class": null
+  },
+  {
+    "id": 6,
+    "title": "Binary Tree Inorder Traversal",
+    "subject": "Coding Practice",
+    "q_type": "code",
+    "language": "cpp",
+    "starter_code": "/*\nstruct Node {\n    int data;\n    Node* left;\n    Node* right;\n};\n*/\nclass solution {\n  public:\n    vector<int> inOrder(Node* root) {\n        // Write your code here\n    }\n};",
+    "question": "Binary Tree Inorder Traversal\n\nGiven a binary tree, find its Inorder Traversal.\n\nYour Task:\nComplete the function inOrder(root) which takes the root of the tree as input and returns an array containing the inorder traversal of the tree.\n\nExample 1:\nInput:\n       1\n     /    \\\n    3      2\nOutput: 3 1 2\n\nConstraints:\n1 <= Number of nodes <= 10^5\n0 <= Data of a node <= 10^5",
+    "expected_signature": "inOrder",
+    "expected_class": "solution"
+  },
+  {
+    "id": 7,
+    "title": "Maximum Depth of Binary Tree",
+    "subject": "Coding Practice",
+    "q_type": "code",
+    "language": "java",
+    "starter_code": "/*\nclass Node {\n    int data;\n    Node left, right;\n    Node(int item) {\n        data = item;\n        left = right = null;\n    }\n}\n*/\nclass Solution {\n    public int maxDepth(Node root) {\n        // Write your code here\n        return 0;\n    }\n}",
+    "question": "Maximum Depth of Binary Tree\n\nGiven the root of a binary tree, return its maximum depth.\nA binary tree's maximum depth is the number of nodes along the longest path from the root node down to the farthest leaf node.\n\nYour Task:\nComplete the function maxDepth(root) which takes the root node and returns the maximum depth as an integer.\n\nExample 1:\nInput: root = [3,9,20,null,null,15,7]\nOutput: 3\n\nConstraints:\nThe number of nodes in the tree is in the range [0, 10^4].",
+    "expected_signature": "maxDepth",
+    "expected_class": "Solution"
+  },
+  {
+    "id": 8,
+    "title": "Valid Parentheses / Balanced Brackets",
+    "subject": "Coding Practice",
+    "q_type": "code",
+    "language": "python",
+    "starter_code": "def isBalanced(s: str) -> bool:\n    # Write your code here\n    pass",
+    "question": "Valid Parentheses / Balanced Brackets\n\nGiven a string s containing just the characters '(', ')', '{', '}', '[' and ']', determine if the input string is valid.\nAn input string is valid if open brackets are closed by the same type of brackets in the correct order.\n\nYour Task:\nComplete isBalanced(s) which returns True if valid, False otherwise.\n\nExample 1:\nInput: s = \"()[]{}\"\nOutput: true\n\nExample 2:\nInput: s = \"(]\"\nOutput: false\n\nConstraints:\n1 <= s.length <= 10^4",
+    "expected_signature": "isBalanced",
+    "expected_class": null
+  },
+  {
+    "id": 9,
+    "title": "Next Greater Element",
+    "subject": "Coding Practice",
+    "q_type": "code",
+    "language": "cpp",
+    "starter_code": "class solution {\n  public:\n    vector<long long> nextLargerElement(vector<long long> arr, int n) {\n        // Write your code here\n    }\n};",
+    "question": "Next Greater Element\n\nGiven an array arr of size n having distinct elements, the task is to find the next greater element for each element of the array in order of their appearance in the array. If no greater element exists, output -1.\n\nYour Task:\nComplete the function nextLargerElement(arr, n) which returns a list of integers denoting the next greater element for each input array element.\n\nExample 1:\nInput: n = 4, arr = [1, 3, 2, 4]\nOutput: 3 4 4 -1\n\nConstraints:\n1 <= n <= 10^6\n0 <= arr[i] <= 10^18",
+    "expected_signature": "nextLargerElement",
+    "expected_class": "solution"
+  },
+  {
+    "id": 10,
+    "title": "Binary Search in Sorted Array",
+    "subject": "Coding Practice",
+    "q_type": "code",
+    "language": "python",
+    "starter_code": "def binarySearch(arr, n, k):\n    # Write your code here\n    pass",
+    "question": "Binary Search in Sorted Array\n\nGiven a sorted array arr[] of size n and an integer k, find the position of the element k in the array using binary search. If not present, return -1.\n\nYour Task:\nComplete the function binarySearch(arr, n, k) returning the index of k if found or -1.\n\nExample 1:\nInput: n = 5, arr = [1, 2, 3, 4, 5], k = 4\nOutput: 3\n\nConstraints:\n1 <= n <= 10^5\n1 <= arr[i] <= 10^6",
+    "expected_signature": "binarySearch",
+    "expected_class": null
+  },
+  {
+    "id": 11,
+    "title": "Climbing Stairs (Dynamic Programming)",
+    "subject": "Coding Practice",
+    "q_type": "code",
+    "language": "python",
+    "starter_code": "def climbStairs(n: int) -> int:\n    # Write your code here\n    pass",
+    "question": "Climbing Stairs (Dynamic Programming)\n\nYou are climbing a staircase. It takes n steps to reach the top. Each time you can either climb 1 or 2 steps. In how many distinct ways can you climb to the top?\n\nYour Task:\nComplete climbStairs(n) returning the number of distinct ways.\n\nExample 1:\nInput: n = 3\nOutput: 3\nExplanation: There are three ways: 1+1+1, 1+2, 2+1.\n\nConstraints:\n1 <= n <= 45",
+    "expected_signature": "climbStairs",
+    "expected_class": null
+  },
+  {
+    "id": 12,
+    "title": "0/1 Knapsack Problem",
+    "subject": "Coding Practice",
+    "q_type": "code",
+    "language": "cpp",
+    "starter_code": "class solution {\n  public:\n    int knapSack(int W, int wt[], int val[], int n) {\n        // Write your code here\n    }\n};",
+    "question": "0/1 Knapsack Problem\n\nYou are given weights and values of n items, put these items in a knapsack of capacity W to get the maximum total value in the knapsack.\n\nYour Task:\nComplete knapSack(W, wt, val, n) returning the maximum value achievable within capacity W.\n\nExample 1:\nInput: W = 4, n = 3, val[] = {1,2,3}, wt[] = {4,5,1}\nOutput: 3\n\nConstraints:\n1 <= n <= 1000\n1 <= W <= 1000",
+    "expected_signature": "knapSack",
+    "expected_class": "solution"
+  },
+  {
+    "id": 13,
+    "title": "BFS Traversal of Graph",
+    "subject": "Coding Practice",
+    "q_type": "code",
+    "language": "cpp",
+    "starter_code": "class solution {\n  public:\n    vector<int> bfsOfGraph(int V, vector<int> adj[]) {\n        // Write your code here\n    }\n};",
+    "question": "BFS Traversal of Graph\n\nGiven a directed graph with V vertices and E edges represented by adjacency list adj. Perform a Breadth First Traversal starting from vertex 0.\n\nYour Task:\nComplete bfsOfGraph(V, adj) returning an array containing the BFS traversal of the graph starting from vertex 0.\n\nExample 1:\nInput: V = 5, E = 4, edges = 0->1, 0->2, 0->3, 2->4\nOutput: 0 1 2 3 4\n\nConstraints:\n1 <= V, E <= 10^4",
+    "expected_signature": "bfsOfGraph",
+    "expected_class": "solution"
+  },
+  {
+    "id": 14,
+    "title": "Two Sum - Pair With Given Sum",
+    "subject": "Coding Practice",
+    "q_type": "code",
+    "language": "java",
+    "starter_code": "import java.util.*;\n\nclass Solution {\n    public int[] twoSum(int[] nums, int target) {\n        // Write your code here\n        return new int[]{};\n    }\n}",
+    "question": "Two Sum - Pair With Given Sum\n\nGiven an array of integers nums and an integer target, return indices of the two numbers such that they add up to target.\nYou may assume that each input would have exactly one solution, and you may not use the same element twice.\n\nYour Task:\nComplete twoSum(nums, target) which returns an array of two indices.\n\nExample 1:\nInput: nums = [2,7,11,15], target = 9\nOutput: [0,1]\n\nConstraints:\n2 <= nums.length <= 10^4\n-10^9 <= nums[i] <= 10^9",
+    "expected_signature": "twoSum",
+    "expected_class": "Solution"
+  },
+  {
+    "id": 15,
+    "title": "Check Valid Anagram",
+    "subject": "Coding Practice",
+    "q_type": "code",
+    "language": "python",
+    "starter_code": "def isAnagram(a: str, b: str) -> bool:\n    # Write your code here\n    pass",
+    "question": "Check Valid Anagram\n\nGiven two strings a and b, determine whether the two strings are anagrams of each other.\nAn anagram is a word or phrase formed by rearranging the letters of a different word or phrase.\n\nYour Task:\nComplete isAnagram(a, b) returning True if they are anagrams, False otherwise.\n\nExample 1:\nInput: a = \"geeksforgeeks\", b = \"forgeeksgeeks\"\nOutput: true\n\nConstraints:\n1 <= |a|, |b| <= 10^5",
+    "expected_signature": "isAnagram",
+    "expected_class": null
+  }
+]

@@ -17,8 +17,8 @@ os.environ["QUIZZY_OFFLINE_TEST_MODE"] = "1"
 
 
 def test_manifest_host_permissions():
-    """Verify manifest.json has <all_urls> and zero persistent content scripts."""
-    print("\n[Test 1] Auditing extension/manifest.json for external HTTPS host permissions...")
+    """Verify manifest.json has <all_urls>, zero web_accessible_resources, and content scripts restricted strictly to authorized dev/staging."""
+    print("\n[Test 1] Auditing extension/manifest.json for external HTTPS host permissions and content scripts...")
     manifest_path = PROJECT_ROOT / "extension" / "manifest.json"
     with open(manifest_path, "r", encoding="utf-8") as f:
         manifest = json.load(f)
@@ -27,8 +27,14 @@ def test_manifest_host_permissions():
     assert "<all_urls>" in host_perms, "Missing '<all_urls>' in host_permissions for external HTTPS quiz origins!"
     assert any("127.0.0.1:8000" in hp for hp in host_perms), "Missing 127.0.0.1:8000 in host_permissions"
     assert "web_accessible_resources" not in manifest, "web_accessible_resources must not be declared!"
-    assert "content_scripts" not in manifest, "content_scripts must not be declared!"
-    print("  -> Passed manifest.json: <all_urls> present, zero intrusive declarations.")
+
+    content_scripts = manifest.get("content_scripts", [])
+    for cs in content_scripts:
+        assert cs.get("world") == "MAIN", "content_scripts must run in MAIN world for early-init coordination!"
+        assert cs.get("run_at") == "document_start", "content_scripts must run at document_start!"
+        for match in cs.get("matches", []):
+            assert "learning.ccbp.in" not in match, "content_scripts must NOT be injected into third-party production site learning.ccbp.in!"
+    print("  -> Passed manifest.json: <all_urls> present, zero intrusive declarations on production sites.")
 
 
 def test_sidepanel_card_layout_order():

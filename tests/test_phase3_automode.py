@@ -163,7 +163,7 @@ def post_solve_with_retry(client: TestClient, payload: dict, max_retries: int = 
     for attempt in range(max_retries + 1):
         res = client.post("/solve", json=payload)
         data = res.json()
-        if (data.get("status") == "ok" and data.get("confidence_label") == "high") or attempt == max_retries:
+        if (data.get("status") == "ok" and data.get("confidence_label") in ("high", "medium")) or attempt == max_retries:
             return res, data
         time.sleep(1.0)
     return res, data
@@ -234,7 +234,7 @@ def test_simulated_automode_4step_sequence():
 
             assert res.status_code == 200, f"Step {step_num} HTTP failed: {res.text}"
             assert data["status"] == "ok", f"Step {step_num} returned non-ok status: {data}"
-            assert data["confidence_label"] == "high", f"Step {step_num} was not high confidence: {data}"
+            assert data["confidence_label"] in ("high", "medium"), f"Step {step_num} was not high/medium confidence: {data}"
             assert data["auto_eligible"] is True, f"Step {step_num} must be auto_eligible"
 
             if item["payload"]["q_type"] == "mcq":

@@ -2,7 +2,7 @@
 
 > **Production-grade, zero-cost, multi-model AI Quiz Assistant & Automated Solver Chrome Extension (Manifest V3) backed by an asynchronous local FastAPI engine.**
 
-QuizZy pairs a high-speed, local Python inference server with an isolated Chrome MV3 extension to extract, solve, and execute online quizzes in real-time. Operating under a strict **$0 API budget**, QuizZy achieves sub-3-second p95 latency across Multiple Choice (MCQ), Sequence Ordering, and Free-Text questions while guaranteeing **Zero DOM Mutation**, **Zero Model Uncertainty**, and **Order-Invariant Cache Resiliency**.
+QuizZy pairs a high-speed, local Python inference server with an isolated Chrome MV3 extension to extract, solve, and execute online quizzes in real-time. Operating under a strict **$0 API budget**, QuizZy achieves sub-3-second p95 latency across Multiple Choice (MCQ), Sequence Ordering, and Free-Text questions while guaranteeing **Zero DOM Mutation**, **Explicit Uncertainty Handling**, and **Order-Invariant Cache Resiliency**.
 
 ---
 
@@ -31,8 +31,10 @@ graph TD
         Cache["cache.py (SQLite Order-Invariant Key Generator & Dynamic Index Remapper)"]
         LLM["core/llm_client.py (3-Model Groq Consensus + Hedged OpenRouter Fallback)"]
         Prompts["core/prompts.py (Reason-First Math/Bayes Formulation)"]
-        SearXNG["core/searxng.py (Factual Search Contrastive Query & Circuit Breaker)"]
+        Parser["core/parser.py (Defensive LLM Response Parsing, Fence/JSON/ast/regex)"]
+        SearXNG["core/searxng_client.py (Factual Search Contrastive Query & Circuit Breaker)"]
         Normalizer["core/normalizer.py (NFKC, Math Expression & Code Preservation)"]
+        Stealth["extension/stealth_shield.js (Read-Only MAIN-World Diagnostics & Auth Gate)"]
     end
 
     DOM --> Extractor
@@ -41,7 +43,7 @@ graph TD
     BG -->|HTTP POST /solve| API
     API --> Cache
     Cache -->|Cache Miss| LLM
-    LLM <-->|Parallel Queries| GroqCloud["Groq Cloud API (gpt-oss-120b & qwen3.8-27b)"]
+    LLM <-->|Parallel Queries| GroqCloud["Groq Cloud API (openai/gpt-oss-120b & qwen/qwen3.8-27b)"]
     LLM -.->|Tie-Breaker| Arbiter["Groq Arbiter (llama-3.3-70b-versatile)"]
     LLM -.->|Hedged Fallback| OpenRouter["OpenRouter Free Tier (Nemotron / Gemma)"]
     LLM -.->|Factual Disagreement| SearXNG
@@ -57,13 +59,13 @@ graph TD
 
 ## 🔬 Core Engineering Invariants
 
-### 1. Zero-"Uncertain" Consensus & Reason-First Math Solver
+### 1. Explicit Uncertainty Consensus & Reason-First Math Solver
 - **The Combinatorics & Bayes Challenge:** Word permutations (e.g., `"ARRANGE"`) and conditional probability problems frequently cause model divergence when models rush to pick an option letter.
 - **The Architectural Fix:** 
   1. `SYSTEM_PROMPT` enforces strict derivation order: compute character frequencies, factorials ($7! / (2! \times 2!) = 1260$), or Bayes ratio inside the `"reason"` field **before** populating the `"answer"` key.
   2. **Multi-Model Consensus:** Dispatches Primary Model A (`openai/gpt-oss-120b`) and Primary Model B (`qwen/qwen3.8-27b`) simultaneously over distinct Groq keys.
   3. **Fast Groq Arbiter:** In the event of a 1-vs-1 tie, a third independent family model (`llama-3.3-70b-versatile`) is called with reason-first step-by-step verification.
-  4. **Guaranteed Resolution:** Under no circumstances does `solve_question` return `status="UNCERTAIN"` or `answer=None` when at least one model succeeded; the best valid normalized candidate is deterministically selected.
+  4. **Explicit Uncertainty:** When consensus cannot be reached, `solve_question` returns `status="UNCERTAIN"` with tier `UNCERTAIN_NO_AGREEMENT` — uncertainty is a first-class outcome that propagates to the UI (`STOPPED_UNCERTAIN`), so automation stops instead of guessing.
 
 ### 2. Order-Invariant Dynamic Cache (`backend/cache.py`)
 - **Scrambled Option Immunity:** Shuffled questions produce identical normalized cache keys by sorting and hashing canonical option texts (`SHA-256`).
@@ -100,13 +102,15 @@ QuizZy/
 │       ├── models.json            # Capability-tiered model catalog (Groq & OpenRouter)
 │       ├── prompts.py             # Reason-first system prompts & calculation rules
 │       ├── normalizer.py          # NFKC unicode normalizer & math expression parser
-│       └── searxng.py             # Factual grounding client with circuit breaker
+│       ├── parser.py              # Defensive LLM response parsing & extraction
+│       └── searxng_client.py      # Factual grounding client with circuit breaker
 ├── extension/
 │   ├── manifest.json              # Chrome Manifest V3 configuration
 │   ├── floating_hud.js            # Shadow-DOM Rectangular Bar & Movable White Dot
 │   ├── extractor.js               # Zero-DOM-mutation quiz content extractor
 │   ├── executor.js                # Option selection & two-step SUBMIT/NEXT automation
 │   ├── background.js              # Service worker message broker & tab listener
+│   ├── stealth_shield.js          # Read-Only MAIN-world diagnostics & auth gate
 │   ├── sidepanel.html             # Diagnostic sidebar layout
 │   ├── sidepanel.css              # Dark-mode styling for sidebar panel
 │   └── sidepanel.js               # Sidebar telemetry, manual solve & feedback controls
@@ -245,6 +249,7 @@ Solves a question using multi-model consensus, cache lookups, and search groundi
 - `GET /health`: Health status, active model catalog, cache count, and SearXNG circuit status.
 - `GET /stats`: Accuracy statistics, cache hit rates, and model latency averages.
 - `POST /feedback`: Reports incorrect answers, immediately evicts cache poisoning, and appends to `questions.csv`.
+- `POST /debug/solve` (dev only): Same request body as `/solve`, but returns the full decision trace including `agreement_details`, `models_called`, per-model latencies, and consensus path for debugging mis-solves. Cache hits return an empty trace by design.
 
 ---
 
@@ -278,7 +283,7 @@ python tests/test_phase5_feedback_reeval.py
 python tests/test_phase6_multikey_hedged_fallback.py
 ```
 
----
+The `tests/` directory contains 17 test files. The offline self-test (`eval/run_eval.py`) validates normalization, parsing, and grading logic deterministically without network calls.
 
 ## 🛡️ Security & Privacy Guardrails
 

@@ -17,6 +17,10 @@
         <span class="brand-title">QuizZy</span>
         <span class="brand-badge">v1.0</span>
       </div>
+      <div class="mode-toggle-pill" id="panel-mode-toggle" title="Toggle Mode (Alt+M)" role="group" aria-label="Practice Mode Switcher">
+        <button id="btn-mode-mcq" class="mode-toggle-btn active" type="button" aria-label="Multiple Choice Quiz mode" title="Switch to MCQ Mode (Alt+M)">MCQ</button>
+        <button id="btn-mode-code" class="mode-toggle-btn" type="button" aria-label="Coding Practice mode" title="Switch to Code Mode (Alt+M)">CODE</button>
+      </div>
       <div class="header-status">
         <div id="backend-status-pill" class="status-pill status-offline" title="Backend connection status">
           <span class="status-dot"></span>
@@ -55,6 +59,7 @@
           <option value="mcq">MCQ (Single Choice)</option>
           <option value="order">Order (Sequence / Drag)</option>
           <option value="text">Text (Fill-in Blank)</option>
+          <option value="code">Code (Programming)</option>
         </select>
       </div>
 
@@ -161,6 +166,29 @@
             </div>
           </div>
 
+          <!-- Code Solution Display Container (Phase 7) -->
+          <div id="solution-code-container" class="solution-type-container hidden">
+            <div class="solution-subheading" style="display: flex; justify-content: space-between; align-items: center;">
+              <span>Executable Solution Code:</span>
+              <span id="solution-code-lang" class="badge badge-neutral" style="text-transform: uppercase;">PYTHON</span>
+            </div>
+            <div class="code-answer-box">
+              <pre id="solution-code-val" class="code-answer-value"></pre>
+              <div class="code-actions-bar" style="display: flex; gap: 8px; margin-top: 8px;">
+                <button id="btn-copy-code" class="btn btn-secondary btn-sm" title="Copy code to clipboard">
+                  <svg class="btn-icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                  <span id="copy-code-btn-label">Copy Code</span>
+                </button>
+                <button id="btn-apply-code" class="btn btn-primary btn-sm" title="Inject code into editor">
+                  <span>Apply Code</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
           <!-- SearXNG Web Grounding Sources (Collapsible) -->
           <div id="solution-searxng-sources" class="searxng-sources-container hidden">
             <details class="sources-drawer">
@@ -212,13 +240,15 @@
                 Enter correct letter (e.g. "B"), permutation (e.g. "C,A,D,B"), or text:
               </p>
               <div class="form-row">
-                <input type="text" id="input-correct-answer" class="text-input text-input-sm" placeholder="Correct answer (e.g., B or text)..." />
+                <label for="input-correct-answer" class="sr-only">Correct Answer Value</label>
+                <input type="text" id="input-correct-answer" class="text-input text-input-sm" placeholder="Correct answer (e.g., B or text)..." aria-label="Correct answer value" />
               </div>
               <div class="form-row" style="margin-top: 6px;">
-                <input type="text" id="input-feedback-notes" class="text-input text-input-sm" placeholder="Optional notes / explanation..." />
+                <label for="input-feedback-notes" class="sr-only">Optional Feedback Notes</label>
+                <input type="text" id="input-feedback-notes" class="text-input text-input-sm" placeholder="Optional notes / explanation..." aria-label="Optional feedback notes" />
               </div>
               <div class="correction-actions" style="margin-top: 8px;">
-                <button id="btn-apply-override" class="btn btn-primary btn-sm">
+                <button id="btn-apply-override" class="btn btn-primary btn-sm" aria-label="Apply manual answer override" title="Apply manual answer override">
                   Apply Override
                 </button>
               </div>
@@ -290,10 +320,10 @@
           </div>
 
           <div class="form-row">
-            <label for="input-step-delay" class="input-label" title="Cooldown delay before advancing to next question (300-5000ms)">
+            <label for="input-step-delay" class="input-label" title="Cooldown delay before advancing to next question (100-5000ms)">
               Step Delay (ms)
             </label>
-            <input type="number" id="input-step-delay" class="text-input text-input-sm" min="300" max="5000" step="100" value="800" />
+            <input type="number" id="input-step-delay" class="text-input text-input-sm" min="100" max="5000" step="50" value="750" />
           </div>
         </div>
 
@@ -319,6 +349,9 @@
         <div class="automode-action-row" style="margin-top: 10px;">
           <button id="btn-apply-once" class="btn btn-secondary" title="Execute DOM click or fill for current question only without looping">
             Apply Answer Once
+          </button>
+          <button id="btn-swipe-advance" class="btn btn-secondary" title="Swipe or Skip question if cannot be analyzed (Alt+K)">
+            Swipe / Advance
           </button>
           <button id="btn-start-auto" class="btn btn-primary" title="Start guarded autonomous loop">
             Start Auto Mode
@@ -396,8 +429,8 @@
         </div>
 
         <div class="settings-actions-row">
-          <button id="btn-save-selectors" class="btn btn-secondary btn-sm">Save for this Host</button>
-          <button id="btn-reset-selectors" class="btn btn-secondary btn-sm">Reset</button>
+          <button id="btn-save-selectors" class="btn btn-secondary btn-sm" aria-label="Save custom DOM selectors for this host" title="Save custom DOM selectors for this host">Save for this Host</button>
+          <button id="btn-reset-selectors" class="btn btn-secondary btn-sm" aria-label="Reset DOM selectors to defaults" title="Reset DOM selectors to defaults">Reset</button>
         </div>
 
         <hr class="settings-divider" />

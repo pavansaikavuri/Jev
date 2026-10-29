@@ -9,10 +9,13 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class SolveRequest(BaseModel):
     """Request schema for POST /solve."""
     subject: str = Field(default="General", max_length=100)
-    q_type: Literal["mcq", "order", "text"]
+    q_type: Literal["mcq", "order", "text", "code", "multi"]
     question: str = Field(min_length=1, max_length=4000)
     options: List[str] = Field(default_factory=list)
     bypass_cache: bool = Field(default=False)
+    language: Optional[str] = Field(default=None, max_length=50)
+    starter_code: Optional[str] = Field(default=None, max_length=50000)
+    error_context: Optional[str] = Field(default=None, max_length=50000)
 
     @field_validator("subject", mode="before")
     @classmethod
@@ -30,7 +33,7 @@ class SolveRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_options_for_type(self) -> SolveRequest:
-        if self.q_type in ("mcq", "order"):
+        if self.q_type in ("mcq", "order", "multi"):
             if len(self.options) < 2 or len(self.options) > 6:
                 raise ValueError(
                     f"Question type '{self.q_type}' requires between 2 and 6 options, got {len(self.options)}"
@@ -41,10 +44,13 @@ class SolveRequest(BaseModel):
 class SolveResponse(BaseModel):
     """Response schema for POST /solve."""
     status: Literal["ok", "uncertain"]
-    q_type: Literal["mcq", "order", "text"]
+    q_type: Literal["mcq", "order", "text", "code", "multi"]
     answer: str = ""
     selected_index: Optional[int] = None
     selected_text: Optional[str] = None
+    selected_indices: Optional[List[int]] = None
+    selected_texts: Optional[List[str]] = None
+    canonical_keys: Optional[List[str]] = None
     permutation_indices: Optional[List[int]] = None
     ordered_texts: Optional[List[str]] = None
     reason: str = ""
@@ -56,6 +62,8 @@ class SolveResponse(BaseModel):
     latency_ms: float
     searxng_used: bool = False
     search_sources: List[str] = Field(default_factory=list)
+    language: Optional[str] = None
+    error: Optional[str] = None
 
 
 class HealthResponse(BaseModel):
@@ -84,13 +92,15 @@ class StatsResponse(BaseModel):
 class FeedbackRequest(BaseModel):
     """Request schema for POST /feedback."""
     subject: str = Field(default="General", max_length=100)
-    q_type: Literal["mcq", "order", "text"]
+    q_type: Literal["mcq", "order", "text", "code", "multi"]
     question: str = Field(min_length=1, max_length=4000)
     options: List[str] = Field(default_factory=list)
     wrong_model_answer: str = ""
     correct_answer: Optional[Any] = None
     confidence_tier_at_failure: str = ""
     notes: str = ""
+    language: Optional[str] = Field(default=None, max_length=50)
+    starter_code: Optional[str] = Field(default=None, max_length=50000)
     export_to_csv: bool = True
 
     @field_validator("subject", mode="before")
@@ -115,3 +125,9 @@ class FeedbackResponse(BaseModel):
     cache_key: str
     csv_exported: bool = False
     csv_row_id: Optional[str] = None
+
+
+class DebugSolveResponse(SolveResponse):
+    """Extended response for GET /debug/solve with full decision trace."""
+    models_called: List[str] = Field(default_factory=list)
+    agreement_details: Dict[str, Any] = Field(default_factory=dict)

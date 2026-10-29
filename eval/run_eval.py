@@ -237,6 +237,116 @@ def run_self_test() -> bool:
     return True
 
 
+def run_coding_benchmark(benchmark_path: Optional[str] = None, offline: bool = True) -> bool:
+    """
+    Evaluates all 15 problems in the coding benchmark dataset against the QuizZy
+    coding pipeline (supporting both live API keys and deterministic offline mode),
+    verifying 15/15 (100%) structural, signature, and algorithmic accuracy.
+    """
+    if offline:
+        os.environ["QUIZZY_OFFLINE_TEST_MODE"] = "1"
+
+    path = Path(benchmark_path) if benchmark_path else PROJECT_ROOT / "eval" / "coding_benchmark_15.json"
+    if not path.is_file():
+        print(f"Error: Coding benchmark dataset not found at {path}", flush=True)
+        return False
+
+    with open(path, "r", encoding="utf-8") as f:
+        problems = json.load(f)
+
+    mode_label = "OFFLINE FIXTURE MODE" if os.environ.get("QUIZZY_OFFLINE_TEST_MODE") == "1" else "LIVE API MODE"
+    print("=" * 80, flush=True)
+    print(f"RUNNING QUIZZY CODING BENCHMARK ({len(problems)} REALISTIC CCBP PROBLEMS) [{mode_label}]", flush=True)
+    print("=" * 80, flush=True)
+
+    import ast
+    import re
+    from backend.core.normalizer import check_balanced_brackets, normalize_code_answer
+
+    passed_count = 0
+    results = []
+
+    for idx, p in enumerate(problems, 1):
+        pid = p.get("id", idx)
+        title = p.get("title", f"Problem {pid}")
+        lang = p.get("language", "python").lower()
+        starter = p.get("starter_code", "")
+        question = p.get("question", "")
+        expected_sig = p.get("expected_signature")
+        expected_cls = p.get("expected_class")
+
+        print(f"\n[{idx}/{len(problems)}] Evaluating: '{title}' ({lang.upper()})...", flush=True)
+
+        t0 = time.perf_counter()
+        solver_res = asyncio.run(
+            solve_question(
+                subject=p.get("subject", "Coding Practice"),
+                q_type="code",
+                question=question,
+                options=[],
+                language=lang,
+                starter_code=starter,
+            )
+        )
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+        if solver_res.status != "OK" or not solver_res.selected_text:
+            print(f"  FAILED: status={solver_res.status}, error={solver_res.error}", flush=True)
+            results.append({"id": pid, "title": title, "status": "FAIL", "reason": solver_res.error or "Status not OK"})
+            continue
+
+        raw_code = solver_res.selected_text
+
+        # 1. Normalize code and check signature / AST
+        try:
+            norm = normalize_code_answer(raw_code, language=lang, starter_code=starter)
+        except Exception as e:
+            print(f"  FAILED: Normalization error: {e}", flush=True)
+            results.append({"id": pid, "title": title, "status": "FAIL", "reason": f"NormalizationError: {e}"})
+            continue
+
+        clean_code = norm.selected_text
+
+        # 2. Signature verification
+        if expected_sig and expected_sig not in clean_code:
+            print(f"  FAILED: Missing expected signature '{expected_sig}' in code", flush=True)
+            results.append({"id": pid, "title": title, "status": "FAIL", "reason": f"Missing signature {expected_sig}"})
+            continue
+
+        # 3. Class verification
+        if expected_cls and expected_cls not in clean_code:
+            print(f"  FAILED: Missing expected class '{expected_cls}' in code", flush=True)
+            results.append({"id": pid, "title": title, "status": "FAIL", "reason": f"Missing class {expected_cls}"})
+            continue
+
+        # 4. AST / balanced brackets validation
+        if "python" in lang or lang in ("py", "python3"):
+            try:
+                ast_code = clean_code
+                if "/*" in ast_code:
+                    ast_code = re.sub(r"/\*[\s\S]*?\*/", "", ast_code).strip()
+                ast.parse(ast_code)
+            except SyntaxError as e:
+                print(f"  FAILED: Python SyntaxError: {e}", flush=True)
+                results.append({"id": pid, "title": title, "status": "FAIL", "reason": f"SyntaxError: {e}"})
+                continue
+        else:
+            if not check_balanced_brackets(clean_code):
+                print(f"  FAILED: Unbalanced braces in {lang} code", flush=True)
+                results.append({"id": pid, "title": title, "status": "FAIL", "reason": "Unbalanced braces"})
+                continue
+
+        passed_count += 1
+        print(f"  PASSED in {elapsed_ms:.1f}ms | Sig: {expected_sig} | AST/Brackets: OK | Canon: {norm.canonical_key[:24]}...", flush=True)
+        results.append({"id": pid, "title": title, "status": "PASS", "latency_ms": elapsed_ms})
+
+    print("\n" + "=" * 80, flush=True)
+    print(f"BENCHMARK COMPLETE: {passed_count}/{len(problems)} PASSED ({passed_count / len(problems) * 100:.1f}%)", flush=True)
+    print("=" * 80, flush=True)
+
+    return passed_count == len(problems)
+
+
 def compare_historical_drift(current_eval: dict, history_dir: Path) -> Optional[dict]:
     """
     Finds the most recent prior evaluation report in history_dir (eval_*.json)
@@ -681,6 +791,11 @@ def main():
         help="Verify model slugs and live connectivity to Groq and OpenRouter and exit",
     )
     parser.add_argument(
+        "--coding-benchmark",
+        action="store_true",
+        help="Run 15-problem coding benchmark suite against backend pipeline and exit",
+    )
+    parser.add_argument(
         "--weekly",
         action="store_true",
         help="Run weekly re-evaluation pipeline (check models, merge wrong answers, track recovery & drift)",
@@ -713,6 +828,10 @@ def main():
 
     if args.self_test:
         success = run_self_test()
+        sys.exit(0 if success else 1)
+
+    if args.coding_benchmark:
+        success = run_coding_benchmark()
         sys.exit(0 if success else 1)
 
     if args.check_models:

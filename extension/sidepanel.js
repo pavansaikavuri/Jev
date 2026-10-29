@@ -5,34 +5,44 @@
 "use strict";
 
 document.addEventListener("DOMContentLoaded", () => {
+  // Popup Window Mode Support (for zero-DOM proctored coding pages)
+  try {
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get("mode") === "popup") {
+      document.body.classList.add("popup-mode");
+      const launchBanner = document.querySelector(".hud-launch-banner");
+      if (launchBanner) launchBanner.style.display = "none";
+    }
+  } catch (_) { }
+
   // DOM Elements - Header & Status
   const statusPill = document.getElementById("backend-status-pill");
   const statusText = document.getElementById("backend-status-text");
   const btnRefreshHealth = document.getElementById("btn-refresh-health");
-  
+
   // DOM Elements - Manual Controls
   const inputSubject = document.getElementById("input-subject");
   const selectQType = document.getElementById("select-qtype");
   const btnExtractSolve = document.getElementById("btn-extract-solve");
   const btnExtractOnly = document.getElementById("btn-extract-only");
   const btnSolveOnly = document.getElementById("btn-solve-only");
-  
+
   // DOM Elements - Notifications & Preview
   const alertBox = document.getElementById("panel-alert");
   const alertText = document.getElementById("panel-alert-text");
   const btnCloseAlert = document.getElementById("btn-close-alert");
-  
+
   const previewQuestion = document.getElementById("preview-question");
   const previewOptionsContainer = document.getElementById("preview-options-container");
   const previewCountBadge = document.getElementById("preview-count-badge");
-  
+
   // DOM Elements - Solution Display
   const solutionIdleState = document.getElementById("solution-idle-state");
   const solutionLoadingState = document.getElementById("solution-loading-state");
   const loadingStatusText = document.getElementById("loading-status-text");
   const bannerUncertain = document.getElementById("banner-uncertain");
   const uncertainReasonText = document.getElementById("uncertain-reason-text");
-  
+
   const solutionContent = document.getElementById("solution-content");
   const solutionMcqContainer = document.getElementById("solution-mcq-container");
   const solutionMcqOptions = document.getElementById("solution-mcq-options");
@@ -42,15 +52,24 @@ document.addEventListener("DOMContentLoaded", () => {
   const solutionTextVal = document.getElementById("solution-text-val");
   const btnCopyAnswer = document.getElementById("btn-copy-answer");
   const copyBtnLabel = document.getElementById("copy-btn-label");
+
+  // Code Solution Display (Phase 7)
+  const solutionCodeContainer = document.getElementById("solution-code-container");
+  const solutionCodeVal = document.getElementById("solution-code-val");
+  const solutionCodeLang = document.getElementById("solution-code-lang");
+  const btnCopyCode = document.getElementById("btn-copy-code");
+  const copyCodeBtnLabel = document.getElementById("copy-code-btn-label");
+  const btnApplyCode = document.getElementById("btn-apply-code");
+
   const solutionReason = document.getElementById("solution-reason");
-  
+
   const badgeConfidence = document.getElementById("badge-confidence");
   const badgeCache = document.getElementById("badge-cache");
   const badgeLatency = document.getElementById("badge-latency");
   const badgeSearxng = document.getElementById("badge-searxng");
   const solutionSearxngSources = document.getElementById("solution-searxng-sources");
   const searxngSourcesList = document.getElementById("searxng-sources-list");
-  
+
   // DOM Elements - Feedback & Wrong Answer Overrides (Phase 5)
   const btnFlagWrong = document.getElementById("btn-flag-wrong");
   const btnSaveEval = document.getElementById("btn-save-eval");
@@ -61,7 +80,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnApplyOverride = document.getElementById("btn-apply-override");
   const feedbackStatusMsg = document.getElementById("feedback-status-msg");
   const correctionInputHint = document.getElementById("correction-input-hint");
-  
+
   // DOM Elements - Auto Mode Control Center (Phase 3)
   const badgeHostAllowed = document.getElementById("badge-host-allowed");
   const badgeHostBlocked = document.getElementById("badge-host-blocked");
@@ -72,14 +91,15 @@ document.addEventListener("DOMContentLoaded", () => {
   const selectOrderMode = document.getElementById("select-order-mode");
   const chkRequireHigh = document.getElementById("chk-require-high") || document.getElementById("chk-high-agree-only");
   const btnApplyOnce = document.getElementById("btn-apply-once");
+  const btnSwipeAdvance = document.getElementById("btn-swipe-advance");
   const btnStartAuto = document.getElementById("btn-start-auto");
   const btnKillSwitch = document.getElementById("btn-kill-switch");
   const btnResumeAuto = document.getElementById("btn-resume-auto");
-  
+
   const telemetryStateBadge = document.getElementById("telemetry-state-badge");
   const telemetryStepCounter = document.getElementById("telemetry-step-counter");
   const telemetryLog = document.getElementById("telemetry-log");
-  
+
   // DOM Elements - Settings Drawer
   const activeHostBadge = document.getElementById("active-host-badge");
   const inputQuestionSel = document.getElementById("setting-question-selector");
@@ -92,9 +112,50 @@ document.addEventListener("DOMContentLoaded", () => {
   const toggleDomHighlight = document.getElementById("toggle-dom-highlight");
   const toggleBypassCache = document.getElementById("toggle-bypass-cache");
 
+  // DOM Elements - Mode Switcher Pill (MCQ | CODE)
+  const btnModeMcq = document.getElementById("btn-mode-mcq");
+  const btnModeCode = document.getElementById("btn-mode-code");
+
+  function setSidepanelMode(mode) {
+    if (mode === "code") {
+      if (btnModeCode) btnModeCode.classList.add("active");
+      if (btnModeMcq) btnModeMcq.classList.remove("active");
+      if (selectQType) selectQType.value = "code";
+    } else {
+      if (btnModeMcq) btnModeMcq.classList.add("active");
+      if (btnModeCode) btnModeCode.classList.remove("active");
+      if (selectQType && selectQType.value === "code") selectQType.value = "auto";
+    }
+  }
+
+  if (btnModeMcq) {
+    btnModeMcq.addEventListener("click", () => setSidepanelMode("mcq"));
+  }
+  if (btnModeCode) {
+    btnModeCode.addEventListener("click", () => setSidepanelMode("code"));
+  }
+  if (selectQType) {
+    selectQType.addEventListener("change", () => {
+      if (selectQType.value === "code") {
+        setSidepanelMode("code");
+      } else {
+        setSidepanelMode("mcq");
+      }
+    });
+  }
+
+  window.addEventListener("keydown", (e) => {
+    if (e.altKey && (e.key === "m" || e.key === "M")) {
+      if (typeof e.preventDefault === "function") e.preventDefault();
+      const isCode = btnModeCode && btnModeCode.classList.contains("active");
+      setSidepanelMode(isCode ? "mcq" : "code");
+    }
+  });
+
   // In-memory state
   let currentHost = "localhost";
   let activeTabUrl = "";
+  let activeTabId = null;
   let hostAllowlist = ["localhost", "127.0.0.1", "::1"];
   let extractedState = {
     subject: "General",
@@ -135,7 +196,7 @@ document.addEventListener("DOMContentLoaded", () => {
    */
   function waitForQuestionChange(oldSignature, onReady, maxWaitMs = 3500) {
     const start = Date.now();
-    const pollInterval = 150;
+    const pollInterval = 60;
 
     function poll() {
       if (!isAutoRunning || killSwitchTriggered) return;
@@ -158,7 +219,7 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
 
-    setTimeout(poll, 250);
+    setTimeout(poll, 40);
   }
 
   // ==========================================================================
@@ -169,13 +230,13 @@ document.addEventListener("DOMContentLoaded", () => {
     alertText.textContent = msg;
     alertBox.classList.remove("hidden");
     if (isError) {
-      alertBox.style.background = "rgba(239, 68, 68, 0.15)";
-      alertBox.style.borderColor = "rgba(239, 68, 68, 0.4)";
-      alertBox.style.color = "#FCA5A5";
+      alertBox.style.background = "rgba(37, 99, 235, 0.25)";
+      alertBox.style.borderColor = "#3B82F6";
+      alertBox.style.color = "#FFFFFF";
     } else {
-      alertBox.style.background = "rgba(34, 197, 94, 0.15)";
-      alertBox.style.borderColor = "rgba(34, 197, 94, 0.4)";
-      alertBox.style.color = "#86EFAC";
+      alertBox.style.background = "rgba(96, 165, 250, 0.25)";
+      alertBox.style.borderColor = "#60A5FA";
+      alertBox.style.color = "#FFFFFF";
     }
   }
 
@@ -366,6 +427,8 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       if (typeof res.auto_step_delay === "number" && inputStepDelay) {
         inputStepDelay.value = res.auto_step_delay;
+      } else if (inputStepDelay && !inputStepDelay.value) {
+        inputStepDelay.value = 250;
       }
       if (res.auto_order_mode && selectOrderMode) {
         selectOrderMode.value = res.auto_order_mode;
@@ -380,8 +443,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
       // Auto-inject Floating HUD if connected on an allowed quiz tab
       if (isCurrentHostAllowed()) {
-        chrome.runtime.sendMessage({ action: "TOGGLE_FLOATING_HUD" }, () => {
-          if (chrome.runtime.lastError) {}
+        chrome.runtime.sendMessage({ action: "INJECT_FLOATING_HUD", tabId: activeTabId }, () => {
+          if (chrome.runtime.lastError) { }
         });
       }
     });
@@ -391,15 +454,30 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnLaunchHud = document.getElementById("btn-launch-hud");
   if (btnLaunchHud) {
     btnLaunchHud.addEventListener("click", () => {
-      chrome.runtime.sendMessage({ action: "TOGGLE_FLOATING_HUD" }, (res) => {
-        if (chrome.runtime.lastError || (res && !res.success)) {
-          const err = chrome.runtime.lastError ? chrome.runtime.lastError.message : (res ? res.error : "Failed to launch HUD");
-          showAlert(`Floating HUD: ${err}`, true);
-        } else {
-          showAlert("Floating HUD launched on active page!", false);
-          setTimeout(hideAlert, 2000);
-        }
-      });
+      const dispatchLaunch = (targetId) => {
+        chrome.runtime.sendMessage({ action: "LAUNCH_FLOATING_HUD", tabId: targetId }, (res) => {
+          if (chrome.runtime.lastError || (res && !res.success)) {
+            const err = chrome.runtime.lastError ? chrome.runtime.lastError.message : (res ? res.error : "Failed to launch HUD");
+            showAlert(`Floating HUD: ${err}`, true);
+          } else if (res && res.result && res.result.codingMode) {
+            showAlert("Coding Mode: In-page HUD suppressed for stealth. Opened Popup HUD (Alt+M).", false);
+            setTimeout(hideAlert, 3500);
+          } else {
+            showAlert("Floating HUD launched on active page!", false);
+            setTimeout(hideAlert, 2000);
+          }
+        });
+      };
+
+      if (typeof chrome !== "undefined" && chrome.tabs && chrome.tabs.query) {
+        chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
+          const currentId = (tabs && tabs[0]) ? tabs[0].id : activeTabId;
+          if (currentId) activeTabId = currentId;
+          dispatchLaunch(currentId);
+        });
+      } else {
+        dispatchLaunch(activeTabId);
+      }
     });
   }
 
@@ -407,6 +485,10 @@ document.addEventListener("DOMContentLoaded", () => {
     chrome.runtime.sendMessage({ action: "GET_ACTIVE_TAB" }, (response) => {
       if (response && response.success && response.tab && response.tab.url) {
         activeTabUrl = response.tab.url;
+        activeTabId = response.tab.id;
+        if (/\/question\/[a-z0-9-]+/i.test(activeTabUrl)) {
+          setSidepanelMode("code");
+        }
         try {
           const urlObj = new URL(response.tab.url);
           currentHost = urlObj.hostname || "localhost";
@@ -553,9 +635,10 @@ document.addEventListener("DOMContentLoaded", () => {
     if (solutionMcqContainer) solutionMcqContainer.classList.add("hidden");
     if (solutionOrderContainer) solutionOrderContainer.classList.add("hidden");
     if (solutionTextContainer) solutionTextContainer.classList.add("hidden");
+    if (solutionCodeContainer) solutionCodeContainer.classList.add("hidden");
     if (solutionSearxngSources) solutionSearxngSources.classList.add("hidden");
     if (searxngSourcesList) searxngSourcesList.innerHTML = "";
-    
+
     if (badgeConfidence) {
       badgeConfidence.className = "badge badge-neutral";
       badgeConfidence.textContent = "IDLE";
@@ -608,7 +691,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // 2. Confidence Badge
     const confScore = Math.round(solution.confidence_score * 100);
-    
+
     if (badgeConfidence) {
       if (solution.status === "uncertain" || solution.confidence_label === "uncertain") {
         badgeConfidence.textContent = "UNCERTAIN";
@@ -681,23 +764,25 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const letters = ["A", "B", "C", "D", "E", "F"];
 
-    // MCQ Format Rendering
-    if (solution.q_type === "mcq") {
+    // MCQ & Multi-Select Format Rendering
+    if (solution.q_type === "mcq" || solution.q_type === "multi") {
       if (solutionMcqContainer) solutionMcqContainer.classList.remove("hidden");
       if (solutionMcqOptions) {
         solutionMcqOptions.innerHTML = "";
 
         const optionsList = (extracted && extracted.options && extracted.options.length > 0)
           ? extracted.options
-          : (solution.selected_text ? [solution.selected_text] : []);
+          : (solution.selected_texts && solution.selected_texts.length > 0 ? solution.selected_texts : (solution.selected_text ? [solution.selected_text] : []));
 
         optionsList.forEach((optText, idx) => {
-          const isWinner = (idx === solution.selected_index);
           const letter = letters[idx] || String(idx + 1);
+          const isWinner = (solution.q_type === "multi")
+            ? ((solution.selected_indices && solution.selected_indices.includes(idx)) || (solution.canonical_keys && solution.canonical_keys.includes(letter)))
+            : (idx === solution.selected_index);
 
           const card = document.createElement("div");
           card.className = "solution-mcq-card" + (isWinner ? " option-winner" : "");
-          
+
           card.innerHTML = `
             <div class="mcq-letter-badge">${letter}</div>
             <div class="mcq-text-content">
@@ -764,17 +849,71 @@ document.addEventListener("DOMContentLoaded", () => {
         };
       }
     }
+
+    // Code Format Rendering (Phase 7 Coding Practice Mode)
+    else if (solution.q_type === "code") {
+      if (solutionCodeContainer) solutionCodeContainer.classList.remove("hidden");
+      const codeStr = solution.answer || solution.selected_text || "";
+      if (solutionCodeVal) solutionCodeVal.textContent = codeStr;
+      if (solutionCodeLang) {
+        solutionCodeLang.textContent = (solution.language || (extracted && extracted.language) || "code").toUpperCase();
+      }
+
+      if (btnCopyCode) {
+        btnCopyCode.onclick = () => {
+          navigator.clipboard.writeText(codeStr).then(() => {
+            if (copyCodeBtnLabel) copyCodeBtnLabel.textContent = "Copied!";
+            setTimeout(() => {
+              if (copyCodeBtnLabel) copyCodeBtnLabel.textContent = "Copy Code";
+            }, 1800);
+          }).catch(() => {
+            showAlert("Clipboard copy failed. Please copy manually.");
+          });
+        };
+      }
+
+      if (btnApplyCode) {
+        btnApplyCode.onclick = () => {
+          chrome.runtime.sendMessage({
+            action: "WRITE_CODE_EDITOR_MAIN",
+            payload: {
+              code: codeStr,
+              language: solution.language || (extracted && extracted.language),
+              starter_code: (extracted && extracted.starter_code)
+            }
+          }, (res) => {
+            if (res && res.success) {
+              showAlert("Code successfully injected into editor!", false);
+              setTimeout(hideAlert, 2000);
+            } else {
+              showAlert(`Code injection failed: ${(res && res.error) || "Editor not found"}`);
+            }
+          });
+        };
+      }
+    }
   }
 
   // ==========================================================================
   // Core Action: Extract Quiz
   // ==========================================================================
-  function performExtraction(callback) {
+  function performExtraction(callback, isDeepScan = false) {
     hideAlert();
     const forcedQType = selectQType ? selectQType.value : "auto";
     const selectors = getCustomSelectors();
 
     function handleSuccess(response) {
+      // Progressive deep scan: if question found but 0 options on MCQ/order, wait 250ms for hydration and re-scan
+      const needsOptions = response.q_type !== "text" && response.q_type !== "code";
+      const hasFewOptions = !response.options || response.options.length < 2;
+      if (response.success && response.question && needsOptions && hasFewOptions && !isDeepScan) {
+        if (loadingStatusText) loadingStatusText.textContent = "Scanning dynamic DOM elements and options...";
+        setTimeout(() => {
+          performExtraction(callback, true);
+        }, 250);
+        return;
+      }
+
       extractedState = response;
       renderPreview(response);
 
@@ -782,7 +921,7 @@ document.addEventListener("DOMContentLoaded", () => {
         inputSubject.value = response.subject;
         try {
           chrome.storage.local.set({ subject: response.subject });
-        } catch (e) {}
+        } catch (e) { }
       } else if (response.subject && inputSubject && (!inputSubject.value || inputSubject.value === "General")) {
         inputSubject.value = response.subject;
       }
@@ -853,7 +992,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     resetSolutionDisplay();
     if (solutionLoadingState) solutionLoadingState.classList.remove("hidden");
-    if (loadingStatusText) loadingStatusText.textContent = "Solving via dual Groq models...";
+    if (loadingStatusText) loadingStatusText.textContent = "Analyzing via dual models with two-stage verification...";
     if (btnExtractSolve) btnExtractSolve.disabled = true;
 
     const payload = {
@@ -861,6 +1000,8 @@ document.addEventListener("DOMContentLoaded", () => {
       q_type: (selectQType && selectQType.value !== "auto") ? selectQType.value : extracted.q_type,
       question: (previewQuestion ? previewQuestion.value || extracted.question : extracted.question).trim(),
       options: extracted.options || [],
+      language: (extracted && extracted.language) ? extracted.language : null,
+      starter_code: (extracted && extracted.starter_code) ? extracted.starter_code : null,
       bypass_cache: toggleBypassCache ? toggleBypassCache.checked : false
     };
 
@@ -945,11 +1086,37 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
+    if (solution.q_type === "code") {
+      const code = solution.answer || solution.selected_text || "";
+      chrome.runtime.sendMessage({
+        action: "WRITE_CODE_EDITOR_MAIN",
+        payload: {
+          code,
+          language: solution.language || (extractedState && extractedState.language),
+          starter_code: solution.starter_code || (extractedState && extractedState.starter_code)
+        }
+      }, (res) => {
+        if (res && res.success) {
+          showAlert("Code successfully injected into editor!", false);
+          setTimeout(hideAlert, 2000);
+          if (callback) callback(true, res);
+        } else {
+          showAlert(`Code injection failed: ${(res && res.error) || "Editor not found"}`);
+          if (callback) callback(false, res);
+        }
+      });
+      return;
+    }
+
     const selectors = getCustomSelectors();
     const actionPayload = {
       q_type: solution.q_type,
       selected_index: solution.selected_index,
       selected_text: solution.selected_text,
+      selected_indices: solution.selected_indices,
+      selected_texts: solution.selected_texts,
+      canonical_keys: solution.canonical_keys,
+      canonical_key: solution.canonical_key,
       answer: solution.answer,
       permutation_indices: solution.permutation_indices,
       ordered_texts: solution.ordered_texts,
@@ -1014,7 +1181,7 @@ document.addEventListener("DOMContentLoaded", () => {
     killSwitchTriggered = false;
     autoStepIndex = 0;
     autoMaxSteps = Math.min(100, Math.max(1, parseInt(inputMaxSteps ? inputMaxSteps.value : 10) || 10));
-    autoStepDelay = Math.min(5000, Math.max(300, parseInt(inputStepDelay ? inputStepDelay.value : 800) || 800));
+    autoStepDelay = Math.min(5000, Math.max(100, parseInt(inputStepDelay ? inputStepDelay.value : 250) || 250));
     previousQuestionText = "";
     previousQuestionSignature = "";
     sameQuestionCount = 0;
@@ -1054,10 +1221,17 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!isAutoRunning || killSwitchTriggered) return;
 
       if (!extracted || !extracted.question) {
-        isAutoRunning = false;
-        setTelemetryState("STOPPED_ERROR", `[Step ${currentStepNum}] Extraction failed: No question detected.`);
-        if (btnKillSwitch) btnKillSwitch.classList.add("hidden");
-        if (btnStartAuto) btnStartAuto.classList.remove("hidden");
+        if (sameQuestionCount < 2) {
+          sameQuestionCount++;
+          setTimeout(() => performExtraction(onExtracted), 400);
+          return;
+        }
+        // Advance past unparseable screen and keep running (swipe or skip)!
+        sameQuestionCount = 0;
+        setTelemetryState("RUNNING", `[Step ${currentStepNum}] Extraction retry limit reached. Advancing to next question...`);
+        chrome.runtime.sendMessage({ action: "SWIPE_OR_ADVANCE" }, () => {
+          setTimeout(() => { if (isAutoRunning && !killSwitchTriggered) runNextAutoStep(); }, 800);
+        });
         return;
       }
 
@@ -1066,10 +1240,12 @@ document.addEventListener("DOMContentLoaded", () => {
       if (previousQuestionSignature && currentSignature === previousQuestionSignature) {
         sameQuestionCount++;
         if (sameQuestionCount >= 2) {
-          isAutoRunning = false;
-          setTelemetryState("STOPPED_ERROR", `[Step ${currentStepNum}] Halted: Page did not advance to a new question after Next click.`);
-          if (btnKillSwitch) btnKillSwitch.classList.add("hidden");
-          if (btnStartAuto) btnStartAuto.classList.remove("hidden");
+          // Page did not advance to a new question after Next click - swipe / advance to maintain auto flow!
+          setTelemetryState("RUNNING", `[Step ${currentStepNum}] Page did not advance. Swiping / advancing to maintain auto flow...`);
+          sameQuestionCount = 0;
+          chrome.runtime.sendMessage({ action: "SWIPE_OR_ADVANCE" }, () => {
+            setTimeout(() => { if (isAutoRunning && !killSwitchTriggered) runNextAutoStep(); }, 800);
+          });
           return;
         }
       } else {
@@ -1085,30 +1261,30 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!isAutoRunning || killSwitchTriggered) return;
 
         if (!solution) {
-          isAutoRunning = false;
-          setTelemetryState("STOPPED_ERROR", `[Step ${currentStepNum}] Backend solver returned error.`);
-          if (btnKillSwitch) btnKillSwitch.classList.add("hidden");
-          if (btnStartAuto) btnStartAuto.classList.remove("hidden");
+          setTelemetryState("RUNNING", `[Step ${currentStepNum}] Backend solver returned error. Swiping/advancing to next question...`);
+          chrome.runtime.sendMessage({ action: "SWIPE_OR_ADVANCE" }, () => {
+            setTimeout(() => { if (isAutoRunning && !killSwitchTriggered) runNextAutoStep(); }, 800);
+          });
           return;
         }
 
-        // GUARDRAIL 1: Halt immediately on uncertain!
+        // GUARDRAIL 1: Halt or advance on uncertain consensus (DO NOT GUESS)
         if (solution.status !== "ok" || solution.confidence_label === "uncertain") {
-          isAutoRunning = false;
-          setTelemetryState("STOPPED_UNCERTAIN", `EMERGENCY HALT: Model consensus uncertain (${solution.reason || "Disagreement"}). Do not guess.`);
-          showAlert(`Auto Mode Halted on Step ${currentStepNum}: Uncertain consensus.`, true);
-          if (btnKillSwitch) btnKillSwitch.classList.add("hidden");
-          if (btnStartAuto) btnStartAuto.classList.remove("hidden");
+          setTelemetryState("STOPPED_UNCERTAIN", `Model consensus uncertain (${solution.reason || "Disagreement"}). Swiping/skipping question to protect accuracy...`);
+          showAlert(`Auto Mode Skipping on Step ${currentStepNum}: Uncertain consensus. (Do not guess)`, false);
+          chrome.runtime.sendMessage({ action: "SWIPE_OR_ADVANCE" }, () => {
+            setTimeout(() => { if (isAutoRunning && !killSwitchTriggered) runNextAutoStep(); }, 800);
+          });
           return;
         }
 
         // GUARDRAIL 2: Require HIGH_BOTH_AGREE if checked
         if (chkRequireHigh && chkRequireHigh.checked && solution.confidence_label !== "high") {
-          isAutoRunning = false;
-          setTelemetryState("STOPPED_UNCERTAIN", `HALTED: Confidence is '${solution.confidence_label}' (${Math.round(solution.confidence_score * 100)}%). Requires HIGH_BOTH_AGREE.`);
-          showAlert(`Auto Mode Halted: Question requires high consensus confidence.`, true);
-          if (btnKillSwitch) btnKillSwitch.classList.add("hidden");
-          if (btnStartAuto) btnStartAuto.classList.remove("hidden");
+          setTelemetryState("STOPPED_UNCERTAIN", `HALTED: Confidence is '${solution.confidence_label}' (${Math.round(solution.confidence_score * 100)}%). Swiping/skipping to protect accuracy.`);
+          showAlert(`Auto Mode Skipping: Question requires high consensus confidence.`, false);
+          chrome.runtime.sendMessage({ action: "SWIPE_OR_ADVANCE" }, () => {
+            setTimeout(() => { if (isAutoRunning && !killSwitchTriggered) runNextAutoStep(); }, 800);
+          });
           return;
         }
 
@@ -1121,6 +1297,18 @@ document.addEventListener("DOMContentLoaded", () => {
             if (btnResumeAuto) btnResumeAuto.classList.remove("hidden");
             return;
           }
+        }
+
+        // 3B. Content Protection Gate for Coding Questions
+        // Never destructively overwrite code or blindly submit on coding routes; advance safely.
+        const isPureCoding = solution.q_type === "code" || (extracted && extracted.q_type === "code");
+        const hasOptions = extracted && Array.isArray(extracted.options) && extracted.options.length >= 2;
+        if (isPureCoding && !hasOptions) {
+          setTelemetryState("STOPPED_CONTENT_PROTECTED", `[Step ${currentStepNum}] Coding question detected. Auto Mode advancing to protect code content.`);
+          chrome.runtime.sendMessage({ action: "CLICK_NEXT_BUTTON" }, () => {
+            setTimeout(() => { if (isAutoRunning && !killSwitchTriggered) runNextAutoStep(); }, 600);
+          });
+          return;
         }
 
         // 4. Execute DOM Action
@@ -1181,23 +1369,28 @@ document.addEventListener("DOMContentLoaded", () => {
             }
 
             // General action failure or option selection verification failure
-            isAutoRunning = false;
             const isSelectionFailure = (actionRes && (actionRes.error === "OPTION_SELECTION_FAILED" || actionRes.selected === false || actionRes.ok === false));
             const failReason = isSelectionFailure
               ? "STOPPED_SELECTION_FAILED (Did not click Submit)"
               : `[Step ${currentStepNum}] DOM action failed: ${actionRes ? actionRes.error : "Unknown"}`;
 
-            setTelemetryState("STOPPED_ERROR", failReason);
-            showAlert(`Auto Mode Halted: ${failReason}`, true);
+            setTelemetryState("RUNNING", `${failReason}. Advancing to next question to maintain auto flow...`);
+            showAlert(`Auto Mode: ${failReason}. Advancing...`, false);
 
-            // Highlight winning option in host page so user can click manually
+            // Highlight winning option or target order badges in host page
+            const highlightPayload = (solution && solution.q_type === "order" && Array.isArray(solution.ordered_texts))
+              ? { target_order_badges: solution.ordered_texts }
+              : { selected_index: targetIdx };
+
             chrome.runtime.sendMessage({
               action: "APPLY_DOM_HIGHLIGHT",
-              payload: { selected_index: targetIdx }
+              payload: highlightPayload
             });
 
-            if (btnKillSwitch) btnKillSwitch.classList.add("hidden");
-            if (btnStartAuto) btnStartAuto.classList.remove("hidden");
+            // Advance to next question so auto mode keeps running!
+            chrome.runtime.sendMessage({ action: "CLICK_NEXT_BUTTON" }, () => {
+              setTimeout(() => { if (isAutoRunning && !killSwitchTriggered) runNextAutoStep(); }, 700);
+            });
             return;
           }
 
@@ -1205,11 +1398,19 @@ document.addEventListener("DOMContentLoaded", () => {
           autoStepIndex++;
           setTelemetryCounter(autoStepIndex, autoMaxSteps);
 
+          // For drag-and-drop ordering questions: if unverified, advance anyway so auto mode continues
+          if (solution && solution.q_type === "order" && !actionRes?.verified_order) {
+            setTelemetryState("ORDER_VERIFIED_WAITING_SUBMIT", `[Step ${currentStepNum}] Order unverified. Proceeding to submit to maintain auto flow.`);
+          }
+
           if (autoStepIndex >= autoMaxSteps) {
             isAutoRunning = false;
             setTelemetryState("STOPPED_MAX_STEPS", `Completed max step limit (${autoMaxSteps} questions). Auto Mode finished.`);
             if (btnKillSwitch) btnKillSwitch.classList.add("hidden");
-            if (btnStartAuto) btnStartAuto.classList.remove("hidden");
+            if (btnStartAuto) {
+              btnStartAuto.classList.remove("hidden");
+              btnStartAuto.disabled = false;
+            }
             return;
           }
 
@@ -1228,11 +1429,13 @@ document.addEventListener("DOMContentLoaded", () => {
               if (!isAutoRunning || killSwitchTriggered) return;
 
               if (!nextRes || !nextRes.success) {
-                isAutoRunning = false;
                 const err = nextRes && nextRes.error ? nextRes.error : "Next button not found.";
-                setTelemetryState("STOPPED_ERROR", `[Step ${autoStepIndex}] ${err}`);
-                if (btnKillSwitch) btnKillSwitch.classList.add("hidden");
-                if (btnStartAuto) btnStartAuto.classList.remove("hidden");
+                setTelemetryState("RUNNING", `[Step ${autoStepIndex}] ${err} Retrying advance...`);
+                setTimeout(() => {
+                  if (isAutoRunning && !killSwitchTriggered) {
+                    runNextAutoStep();
+                  }
+                }, 800);
                 return;
               }
 
@@ -1334,6 +1537,20 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  if (btnSwipeAdvance) {
+    btnSwipeAdvance.addEventListener("click", () => {
+      showAlert("Swiping / advancing to next question...", false);
+      chrome.runtime.sendMessage({ action: "SWIPE_OR_ADVANCE" }, (res) => {
+        if (res && (res.success || res.ok)) {
+          showAlert(`Advanced: ${res.button_text || res.method || "Next"}`, false);
+        } else {
+          showAlert("Could not find next / skip / swipe element.", true);
+        }
+        setTimeout(hideAlert, 2000);
+      });
+    });
+  }
+
   if (btnStartAuto) {
     btnStartAuto.addEventListener("click", startAutoMode);
   }
@@ -1343,6 +1560,29 @@ document.addEventListener("DOMContentLoaded", () => {
   // ==========================================================================
   if (btnExtractSolve) {
     btnExtractSolve.addEventListener("click", () => {
+      const isCodingMode = (btnModeCode && btnModeCode.classList.contains("active")) || (selectQType && selectQType.value === "code");
+      if (isCodingMode) {
+        resetSolutionDisplay();
+        if (solutionLoadingState) solutionLoadingState.classList.remove("hidden");
+        if (loadingStatusText) loadingStatusText.textContent = "Starting Unified Coding Solve & Automation Loop...";
+        if (btnExtractSolve) btnExtractSolve.disabled = true;
+
+        chrome.runtime.sendMessage({
+          action: "START_CODING_AUTOMATION"
+        }, (res) => {
+          if (btnExtractSolve) btnExtractSolve.disabled = false;
+          if (solutionLoadingState) solutionLoadingState.classList.add("hidden");
+          if (res && res.success && res.solution) {
+            renderSolution(res.solution, { q_type: "code", language: res.solution.language });
+            showAlert(res.loopResult ? `Coding automation: ${res.loopResult.status}` : "Coding solved successfully!", false);
+            setTimeout(hideAlert, 2500);
+          } else {
+            showAlert(`Coding solve failed: ${(res && res.error) || "Unknown error"}`);
+          }
+        });
+        return;
+      }
+
       resetSolutionDisplay();
       if (solutionLoadingState) solutionLoadingState.classList.remove("hidden");
       if (loadingStatusText) loadingStatusText.textContent = "Extracting DOM from active tab...";
@@ -1511,7 +1751,7 @@ document.addEventListener("DOMContentLoaded", () => {
           showFeedbackStatus("Failed to apply override. Check backend connection.", true);
           return;
         }
-        
+
         showFeedbackStatus("Override applied! Cache updated with USER_VERIFIED (100%). Saved to eval CSV.", false);
         if (badgeConfidence) {
           badgeConfidence.textContent = "USER VERIFIED (100%)";
@@ -1537,11 +1777,48 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Global Keyboard Shortcut: Alt+X or Ctrl+Shift+X to trigger Extract & Solve
+  // Global Keyboard Shortcuts in Sidepanel (Alt+S, Alt+A, Alt+N, Alt+K, Alt+O, Alt+M)
   document.addEventListener("keydown", (e) => {
-    if ((e.altKey && e.key.toLowerCase() === "x") || (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "x")) {
+    if (!e) return;
+    const key = (e.key || "").toLowerCase();
+    const code = e.code || "";
+
+    if ((e.altKey && (key === "s" || code === "KeyS" || key === "x")) || (e.ctrlKey && e.shiftKey && (key === "x" || code === "KeyX"))) {
       e.preventDefault();
       if (btnExtractSolve) btnExtractSolve.click();
+      return;
+    }
+
+    if (e.altKey && (key === "a" || code === "KeyA")) {
+      e.preventDefault();
+      if (btnApplyOnce) btnApplyOnce.click();
+      return;
+    }
+
+    if (e.altKey && (key === "n" || code === "KeyN")) {
+      e.preventDefault();
+      chrome.runtime.sendMessage({ action: "CLICK_NEXT_BUTTON" });
+      return;
+    }
+
+    if (e.altKey && (key === "k" || code === "KeyK" || key === "w" || code === "KeyW")) {
+      e.preventDefault();
+      if (btnSwipeAdvance) {
+        btnSwipeAdvance.click();
+      } else {
+        chrome.runtime.sendMessage({ action: "SWIPE_OR_ADVANCE" });
+      }
+      return;
+    }
+
+    if (e.altKey && (key === "o" || code === "KeyO" || (e.shiftKey && (key === "a" || code === "KeyA")))) {
+      e.preventDefault();
+      if (isAutoRunning) {
+        triggerKillSwitch("Stopped via shortcut");
+      } else {
+        if (btnStartAuto) btnStartAuto.click();
+      }
+      return;
     }
   });
 
@@ -1561,6 +1838,84 @@ document.addEventListener("DOMContentLoaded", () => {
     const v = n % 100;
     return s[(v - 20) % 10] || s[v] || s[0];
   }
+
+  // Connect to background to track side panel open/closed lifecycle
+  let sidePanelPort = null;
+  if (typeof chrome !== "undefined" && chrome.runtime && typeof chrome.runtime.connect === "function") {
+    try {
+      sidePanelPort = chrome.runtime.connect({ name: "quizzy-sidepanel-port" });
+    } catch (_) {}
+  }
+
+  // Handle messages from background (Close command, forwarded shortcuts from web page)
+  if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage) {
+    chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+      if (!msg) return;
+      if (msg.action === "CLOSE_SIDEPANEL_COMMAND") {
+        window.close();
+        if (typeof sendResponse === "function") sendResponse({ success: true, closed: true });
+        return true;
+      }
+      if (msg.action === "FORWARD_SHORTCUT_TO_SIDEPANEL" || msg.action === "SHORTCUT_ACTION") {
+        const cmd = msg.command;
+        if (cmd === "trigger_solve") {
+          if (btnExtractSolve) btnExtractSolve.click();
+        } else if (cmd === "trigger_apply") {
+          if (btnApplyOnce) btnApplyOnce.click();
+        } else if (cmd === "trigger_next") {
+          chrome.runtime.sendMessage({ action: "CLICK_NEXT_BUTTON" });
+        } else if (cmd === "trigger_skip" || cmd === "trigger_advance") {
+          if (btnSwipeAdvance) btnSwipeAdvance.click();
+          else chrome.runtime.sendMessage({ action: "SWIPE_OR_ADVANCE" });
+        } else if (cmd === "trigger_auto" || cmd === "trigger_auto_loop") {
+          if (isAutoRunning) {
+            triggerKillSwitch("Stopped via shortcut");
+          } else {
+            if (btnStartAuto) btnStartAuto.click();
+          }
+        } else if (cmd === "trigger_mode") {
+          const isCode = btnModeCode && btnModeCode.classList.contains("active");
+          setSidepanelMode(isCode ? "mcq" : "code");
+        } else if (cmd === "kill_switch" || cmd === "escape") {
+          triggerKillSwitch("Stopped via shortcut");
+        }
+        if (typeof sendResponse === "function") sendResponse({ success: true, handled: true });
+        return true;
+      }
+    });
+  }
+
+  // Solo Shift Key Listener to toggle Auto Mode inside side panel (Parity with Floating HUD)
+  let shiftDownSp = false;
+  let shiftComboUsedSp = false;
+  let shiftTimerSp = null;
+  document.addEventListener("keydown", (e) => {
+    if (!e) return;
+    if (e.key === "Shift" || e.code === "ShiftLeft" || e.code === "ShiftRight") {
+      shiftDownSp = true;
+      shiftComboUsedSp = false;
+    } else {
+      if (shiftDownSp) shiftComboUsedSp = true;
+    }
+  });
+
+  document.addEventListener("keyup", (e) => {
+    if (!e) return;
+    if (e.key === "Shift" || e.code === "ShiftLeft" || e.code === "ShiftRight") {
+      shiftDownSp = false;
+      if (!shiftComboUsedSp) {
+        if (shiftTimerSp) clearTimeout(shiftTimerSp);
+        shiftTimerSp = setTimeout(() => {
+          shiftTimerSp = null;
+          if (isAutoRunning) {
+            triggerKillSwitch("Stopped via Shift hotkey");
+          } else {
+            if (btnStartAuto) btnStartAuto.click();
+          }
+        }, 220);
+      }
+    }
+  });
 
   // Run initializations
   checkBackendHealth();

@@ -17,7 +17,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 os.environ["QUIZZY_OFFLINE_TEST_MODE"] = "1"
 
-from backend.core.normalizer import normalize_mcq_answer, NormalizedAnswer
+from backend.core.normalizer import normalize_mcq_answer, normalize_complexity_expr, normalize_order_answer, NormalizedAnswer
+from backend.core.searxng_client import is_factual_question
 from backend.core.llm_client import solve_question, SolverResponse, ModelResponse
 
 
@@ -1059,7 +1060,770 @@ process.exit(0);
         self.assertEqual(res.returncode, 0, f"Test 5 Node.js failed:\nSTDOUT: {res.stdout}\nSTDERR: {res.stderr}")
         self.assertIn("TEST5_SUCCESS", res.stdout)
 
+    def test_test6_split_pane_primitive_coding_mcq_and_complexity_normalization(self):
+        """
+        Test 6: Split-pane code-context MCQ extraction on learning.ccbp.in/primitive-coding/practice/*.
+        - Replicates split-pane layout: Left pane MCQ + 4 options in backticks, Right pane Monaco editor.
+        - Monaco editor contains out-of-order .view-line elements (virtualized DOM) with Python 3-loop function.
+        - Asserts extractor.js classifies as 'mcq' (not 'code'), extracts 4 options without leaking editor lines or buttons.
+        - Asserts extractor.js extracts the 11-line Python function in vertical order under Reference Code:.
+        - Asserts normalizer.py normalizes 'B', '`O(N^3)`', 'O(n^3)', 'O(N³)', 'Option B: `O(N^3)`' -> B (idx 1).
+        - Asserts normalizer.py maps 'O(N log N)' -> A (idx 0), and keeps O(N^2) and O(N^3) strictly distinct.
+        - Asserts searxng_client.py skips web search for this algorithmic code-complexity question.
+        """
+        js_test = r"""
+const path = require("path");
+const fs = require("fs");
+const vm = require("vm");
+
+class MockNode {
+  constructor(tagName, isText = false) {
+    this.tagName = isText ? "#text" : String(tagName).toUpperCase();
+    this.nodeType = isText ? 3 : 1;
+    this.nodeValue = isText ? tagName : "";
+    this.className = "";
+    this.id = "";
+    this.type = isText ? "" : String(tagName).toLowerCase();
+    this.value = "";
+    this.checked = false;
+    this.disabled = false;
+    this.childNodes = [];
+    this.parentElement = null;
+    this.listeners = {};
+    this.attributes = {};
+    this.style = {};
+  }
+  setAttribute(k, v) { this.attributes[k] = String(v); if (k === "id") this.id = String(v); if (k === "class") this.className = String(v); }
+  getAttribute(k) { return this.attributes[k] || (k === "id" ? this.id : (k === "class" ? this.className : null)); }
+  hasAttribute(k) { return k in this.attributes; }
+  appendChild(c) { c.parentElement = this; this.childNodes.push(c); return c; }
+  get textContent() { return this.nodeType === 3 ? this.nodeValue : this.childNodes.map(c => c.textContent).join(""); }
+  get innerText() { return this.textContent; }
+  get firstElementChild() { return this.childNodes.find(c => c.nodeType === 1) || null; }
+  get lastElementChild() { const els = this.childNodes.filter(c => c.nodeType === 1); return els.length ? els[els.length - 1] : null; }
+  get nextElementSibling() {
+    if (!this.parentElement) return null;
+    const siblings = this.parentElement.childNodes.filter(c => c.nodeType === 1);
+    const idx = siblings.indexOf(this);
+    return (idx !== -1 && idx + 1 < siblings.length) ? siblings[idx + 1] : null;
+  }
+  get previousElementSibling() {
+    if (!this.parentElement) return null;
+    const siblings = this.parentElement.childNodes.filter(c => c.nodeType === 1);
+    const idx = siblings.indexOf(this);
+    return (idx > 0) ? siblings[idx - 1] : null;
+  }
+  get children() { return this.childNodes.filter(c => c.nodeType === 1); }
+  get classList() {
+    return {
+      contains: (cls) => (this.className || "").split(/\s+/).includes(cls),
+      add: (cls) => { if (!this.classList.contains(cls)) this.className = (this.className + " " + cls).trim(); },
+      remove: (cls) => { this.className = (this.className || "").split(/\s+/).filter(c => c !== cls).join(" "); }
+    };
+  }
+  getBoundingClientRect() {
+    let top = 0;
+    if (this.style && this.style.top) {
+      top = parseFloat(this.style.top) || 0;
+    }
+    return { left: 100, top: top, width: 300, height: 20 };
+  }
+  contains(other) {
+    let cur = other;
+    while (cur) {
+      if (cur === this) return true;
+      cur = cur.parentElement;
+    }
+    return false;
+  }
+  closest(sel) {
+    let cur = this;
+    while (cur) {
+      if (cur.nodeType === 1 && cur.matches(sel)) return cur;
+      cur = cur.parentElement;
+    }
+    return null;
+  }
+  matches(sel) {
+    if (!sel || this.nodeType !== 1) return false;
+    const parts = sel.split(",").map(s => s.trim()).filter(Boolean);
+    for (const p of parts) {
+      if (this.matchesSingle(p)) return true;
+    }
+    return false;
+  }
+  matchesSingle(p) {
+    if (p === "*") return true;
+    if (p.includes(":nth-of-type(")) {
+      p = p.replace(/:nth-of-type\(\d+\)/g, "");
+      if (!p) return true;
+    }
+    if (p.includes(" > ")) {
+      const segs = p.split(" > ");
+      return this.matchesSingle(segs[segs.length - 1]);
+    }
+    if (p.includes(" ")) {
+      const segs = p.split(/\s+/);
+      return this.matchesSingle(segs[segs.length - 1]);
+    }
+
+    let elTag = this.tagName.toLowerCase();
+    let rem = p;
+
+    const tagMatch = rem.match(/^([a-zA-Z0-9_-]+)/);
+    if (tagMatch) {
+      if (tagMatch[1].toLowerCase() !== elTag) return false;
+      rem = rem.slice(tagMatch[1].length);
+      if (!rem) return true;
+    }
+
+    const classMatch = rem.match(/^\.([a-zA-Z0-9_-]+)/);
+    if (classMatch) {
+      if (!this.classList.contains(classMatch[1])) return false;
+      rem = rem.slice(classMatch[0].length);
+      if (!rem) return true;
+    }
+
+    const idMatch = rem.match(/^#([a-zA-Z0-9_-]+)/);
+    if (idMatch) {
+      if (this.id !== idMatch[1]) return false;
+      rem = rem.slice(idMatch[0].length);
+      if (!rem) return true;
+    }
+
+    const attrContainsMatch = rem.match(/^\[([a-zA-Z0-9_-]+)\*=['"]?([^'"\]]+)['"]?\]/);
+    if (attrContainsMatch) {
+      const attr = attrContainsMatch[1];
+      const val = attrContainsMatch[2];
+      const actualVal = attr === "class" ? (this.className || "") : (this.getAttribute(attr) || "");
+      if (!actualVal.includes(val)) return false;
+      rem = rem.slice(attrContainsMatch[0].length);
+      if (!rem) return true;
+    }
+
+    const attrExactMatch = rem.match(/^\[([a-zA-Z0-9_-]+)=['"]?([^'"\]]+)['"]?\]/);
+    if (attrExactMatch) {
+      const attr = attrExactMatch[1];
+      const val = attrExactMatch[2];
+      const actualVal = attr === "class" ? (this.className || "") : (this.getAttribute(attr) || "");
+      if (actualVal !== val) return false;
+      rem = rem.slice(attrExactMatch[0].length);
+      if (!rem) return true;
+    }
+
+    const attrExistsMatch = rem.match(/^\[([a-zA-Z0-9_-]+)\]/);
+    if (attrExistsMatch) {
+      const attr = attrExistsMatch[1];
+      if (!this.hasAttribute(attr)) return false;
+      rem = rem.slice(attrExistsMatch[0].length);
+      if (!rem) return true;
+    }
+
+    if (rem.startsWith(".")) return this.classList.contains(rem.slice(1));
+    if (rem.startsWith("#")) return this.id === rem.slice(1);
+
+    return false;
+  }
+  querySelectorAll(sel) {
+    const results = [];
+    function check(node) {
+      if (node.nodeType === 1 && node.matches(sel)) results.push(node);
+      for (const child of node.childNodes) check(child);
+    }
+    for (const child of this.childNodes) check(child);
+    return results;
+  }
+  querySelector(sel) {
+    return this.querySelectorAll(sel)[0] || null;
+  }
+}
+
+function el(tag, className = "", attrs = {}, children = []) {
+  const node = new MockNode(tag);
+  node.className = className;
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "type") { node.type = String(v); node.setAttribute(k, v); }
+    else node.setAttribute(k, v);
+  }
+  for (const c of children) {
+    if (typeof c === "string") node.appendChild(new MockNode(c, true));
+    else if (c) node.appendChild(c);
+  }
+  return node;
+}
+
+// 1. Build Left Pane: MCQ Practice Card
+const radio0 = el("input", "sc-radio", { type: "radio", name: "subarray-mcq", id: "opt0" });
+const row0 = el("div", "sc-opt-row", {}, [radio0, el("label", "", { for: "opt0" }, ["`O(NlogN)`"])]);
+
+const radio1 = el("input", "sc-radio", { type: "radio", name: "subarray-mcq", id: "opt1" });
+const row1 = el("div", "sc-opt-row", {}, [radio1, el("label", "", { for: "opt1" }, ["`O(N^3)`"])]);
+
+const radio2 = el("input", "sc-radio", { type: "radio", name: "subarray-mcq", id: "opt2" });
+const row2 = el("div", "sc-opt-row", {}, [radio2, el("label", "", { for: "opt2" }, ["`O(N)`"])]);
+
+const radio3 = el("input", "sc-radio", { type: "radio", name: "subarray-mcq", id: "opt3" });
+const row3 = el("div", "sc-opt-row", {}, [radio3, el("label", "", { for: "opt3" }, ["`O(N^2)`"])]);
+
+const optionsContainer = el("div", "sc-options-list", {}, [row0, row1, row2, row3]);
+
+const leftPane = el("div", "sc-left-pane", {}, [
+  el("h2", "sc-question", {}, ["What is the time complexity of the brute force approach for finding the largest subarray sum?"]),
+  optionsContainer,
+  el("div", "action-buttons", {}, [
+    el("button", "btn-submit", {}, ["SUBMIT"]),
+    el("button", "btn-show", {}, ["SHOW ANSWER"]),
+    el("button", "btn-skip", {}, ["SKIP"])
+  ])
+]);
+
+// 2. Build Right Pane: Monaco Editor with out-of-order virtual lines
+const gutterLineNumbers = [];
+for (let i = 1; i <= 11; i++) {
+  gutterLineNumbers.push(el("div", "line-numbers", {}, [String(i)]));
+}
+const gutter = el("div", "margin", {}, gutterLineNumbers);
+
+const pythonLines = [
+  "def largest_subarray_sum_brute(arr):",
+  "    n = len(arr)",
+  "    max_sum = -float('inf')",
+  "    for i in range(n):",
+  "        for j in range(i, n):",
+  "            current_sum = 0",
+  "            for k in range(i, j + 1):",
+  "                current_sum += arr[k]",
+  "            if current_sum > max_sum:",
+  "                max_sum = current_sum",
+  "    return max_sum"
+];
+
+// Create 11 view-line elements with style.top = i * 20 px
+const viewLineEls = pythonLines.map((codeText, idx) => {
+  const lineEl = el("div", "view-line", {}, [codeText.replace(/ /g, "\u00a0")]);
+  lineEl.style = { top: `${idx * 20}px` };
+  return lineEl;
+});
+
+// Out of order! Scramble childNodes sequence inside .view-lines to rigorously verify vertical sorting
+const scrambledLines = [
+  viewLineEls[4], viewLineEls[0], viewLineEls[10], viewLineEls[2],
+  viewLineEls[7], viewLineEls[1], viewLineEls[9], viewLineEls[3],
+  viewLineEls[6], viewLineEls[8], viewLineEls[5]
+];
+
+const viewLinesContainer = el("div", "view-lines", {}, scrambledLines);
+const monacoEditor = el("div", "monaco-editor", {}, [gutter, viewLinesContainer]);
+const rightPane = el("div", "sc-right-pane", {}, [monacoEditor]);
+
+// Page Structure
+const splitContainer = el("div", "split-view-container", {}, [leftPane, rightPane]);
+const headerEl = el("div", "page-header", {}, [el("h1", "", {}, ["MCQ PRACTICE | LARGEST SUBARRAY SUM"])]);
+const cardEl = el("div", "sc-practice-card", {}, [headerEl, splitContainer]);
+const doc = el("html", "", {}, [el("head"), el("body", "", {}, [cardEl])]);
+doc.body = doc.childNodes[1];
+doc.documentElement = doc;
+doc.querySelector = (sel) => doc.body.querySelector(sel);
+doc.querySelectorAll = (sel) => doc.body.querySelectorAll(sel);
+
+const sandbox = {
+  window: null,
+  document: doc,
+  getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+  parseFloat: parseFloat,
+  isNaN: isNaN
+};
+sandbox.window = sandbox;
+
+const extractorPath = path.resolve(process.cwd(), "extension/extractor.js");
+const extractorCode = fs.readFileSync(extractorPath, "utf8");
+const extractor = vm.runInNewContext(extractorCode, sandbox);
+const result = extractor.extractQuizFromDom();
+
+console.log(JSON.stringify(result));
+process.exit(0);
+"""
+        res = subprocess.run(
+            ["node", "-e", js_test],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            encoding="utf-8"
+        )
+        self.assertEqual(res.returncode, 0, f"Test 6 Node.js failed:\nSTDOUT: {res.stdout}\nSTDERR: {res.stderr}")
+        ext_data = json.loads(res.stdout)
+
+        # 1. Assert extraction success and correct classification
+        self.assertTrue(ext_data.get("success"), "Extractor failed to extract quiz!")
+        self.assertEqual(ext_data.get("q_type"), "mcq", "Split-pane question misclassified as code instead of mcq!")
+
+        # 2. Assert clean options extraction without leaking Monaco code lines or buttons
+        expected_options = ["`O(NlogN)`", "`O(N^3)`", "`O(N)`", "`O(N^2)`"]
+        self.assertEqual(ext_data.get("options"), expected_options, f"Options mismatch: {ext_data.get('options')}")
+        for opt in ext_data["options"]:
+            self.assertNotIn("def largest", opt)
+            self.assertNotIn("SUBMIT", opt)
+            self.assertNotIn("SHOW ANSWER", opt)
+            self.assertNotIn("SKIP", opt)
+
+        # 3. Assert question stem includes the right-pane reference code in correct vertical order
+        question_text = ext_data.get("question", "")
+        self.assertIn("What is the time complexity of the brute force approach for finding the largest subarray sum?", question_text)
+        self.assertIn("Reference Code:", question_text)
+        self.assertIn("def largest_subarray_sum_brute(arr):", question_text)
+        self.assertIn("for i in range(n):", question_text)
+        self.assertIn("for j in range(i, n):", question_text)
+        self.assertIn("for k in range(i, j + 1):", question_text)
+        self.assertIn("return max_sum", question_text)
+
+        # Assert no gutter line numbers leaked into code block
+        self.assertNotIn("1\n2\n3", question_text)
+
+        # 4. Assert Big-O normalizer maps all equivalent forms to B (index 1)
+        options = ext_data["options"]
+        for candidate in ["B", "`O(N^3)`", "O(n^3)", "O(N³)", "O(n ** 3)", "Option B: `O(N^3)`"]:
+            norm = normalize_mcq_answer(candidate, options)
+            self.assertEqual(norm.canonical_key, "B", f"Candidate '{candidate}' failed to resolve to B: {norm.canonical_key}")
+            self.assertEqual(norm.selected_index, 1, f"Candidate '{candidate}' failed to resolve to index 1")
+
+        # Assert normalizer maps O(N log N) -> A (index 0)
+        norm_a = normalize_mcq_answer("O(N log N)", options)
+        self.assertEqual(norm_a.canonical_key, "A")
+        self.assertEqual(norm_a.selected_index, 0)
+
+        # Assert normalizer maps O(N^2) -> D (index 3) and O(N^2) != O(N^3)
+        norm_d = normalize_mcq_answer("`O(N^2)`", options)
+        self.assertEqual(norm_d.canonical_key, "D")
+        self.assertEqual(norm_d.selected_index, 3)
+        self.assertNotEqual(norm.canonical_key, norm_d.canonical_key)
+
+        # Assert strict distinction between O(N^2) and O(2^N)
+        self.assertNotEqual(normalize_complexity_expr("O(N^2)"), normalize_complexity_expr("O(2^N)"))
+
+        # 5. Assert SearXNG search classification skips search for this algorithmic code-complexity question
+        is_fact = is_factual_question("Python", "mcq", question_text, options)
+        self.assertFalse(is_fact, "is_factual_question returned True for algorithmic code question! Web search should be skipped.")
+
+    def test_test7_kadane_drag_and_drop_order_extraction_normalization_and_execution(self):
+        """
+        Test 7: End-to-End Kadane's Algorithm Drag-and-Drop Order Engine (learning.ccbp.in Question 5/15)
+        - Extractor correctly classifies question as q_type: "order" (overriding "MCQ PRACTICE" page header).
+        - Strips leading slot numbers (1..5) and subheader "Drag and Drop to Order" from options.
+        - Preserves inline <code> tokens cleanly (maxSum, curSum, 0).
+        - Populates dragHandleSelectors with 6-dot SVG handles.
+        - Normalizer maps all permutations (["B", "D", "A", "C", "E"], "B -> D -> A -> C -> E", [2, 4, 1, 3, 5])
+          to canonical_key == "B,D,A,C,E" and permutation_indices == [1, 3, 0, 2, 4].
+        - Executor reorders the 5 DOM rows into exact Kadane order [B, D, A, C, E] across simulated React DnD
+          and passes pre-submit verification gate (selected: true, verified_order: true).
+        - Broken/unmoved DOM simulation correctly aborts with ok: false, selected: false, error: "ORDER_REORDER_FAILED".
+        """
+        js_test = r"""
+const path = require("path");
+const fs = require("fs");
+const vm = require("vm");
+
+class MockNode {
+  constructor(tagName, isText = false) {
+    this.tagName = isText ? "#text" : String(tagName).toUpperCase();
+    this.nodeType = isText ? 3 : 1;
+    this.nodeValue = isText ? tagName : "";
+    this.className = "";
+    this.id = "";
+    this.childNodes = [];
+    this.parentElement = null;
+    this.attributes = {};
+    this.tabIndex = -1;
+    this.style = {};
+    this._listeners = {};
+  }
+  setAttribute(k, v) {
+    this.attributes[k] = String(v);
+    if (k === "id") this.id = String(v);
+    if (k === "class") this.className = String(v);
+    if (k === "tabindex") this.tabIndex = parseInt(v, 10);
+  }
+  getAttribute(k) { return this.attributes[k] || (k === "id" ? this.id : (k === "class" ? this.className : null)); }
+  hasAttribute(k) { return k in this.attributes; }
+  removeAttribute(k) { delete this.attributes[k]; }
+  appendChild(c) {
+    if (c.parentElement) c.parentElement.removeChild(c);
+    c.parentElement = this;
+    this.childNodes.push(c);
+    return c;
+  }
+  insertBefore(newNode, refNode) {
+    if (!refNode) return this.appendChild(newNode);
+    if (newNode.parentElement) newNode.parentElement.removeChild(newNode);
+    const idx = this.childNodes.indexOf(refNode);
+    if (idx === -1) return this.appendChild(newNode);
+    newNode.parentElement = this;
+    this.childNodes.splice(idx, 0, newNode);
+    return newNode;
+  }
+  removeChild(c) {
+    const idx = this.childNodes.indexOf(c);
+    if (idx !== -1) {
+      this.childNodes.splice(idx, 1);
+      c.parentElement = null;
+    }
+    return c;
+  }
+  contains(other) {
+    let cur = other;
+    while (cur) {
+      if (cur === this) return true;
+      cur = cur.parentElement;
+    }
+    return false;
+  }
+  get textContent() { return this.nodeType === 3 ? this.nodeValue : this.childNodes.map(c => c.textContent).join(""); }
+  get innerText() { return this.textContent; }
+  get firstElementChild() { return this.childNodes.find(c => c.nodeType === 1) || null; }
+  get lastElementChild() { const els = this.childNodes.filter(c => c.nodeType === 1); return els.length ? els[els.length - 1] : null; }
+  get children() { return this.childNodes.filter(c => c.nodeType === 1); }
+  get classList() {
+    return {
+      contains: (cls) => (this.className || "").split(/\s+/).includes(cls),
+      add: (cls) => { if (!this.classList.contains(cls)) this.className = ((this.className || "") + " " + cls).trim(); },
+      remove: (cls) => { this.className = (this.className || "").split(/\s+/).filter(c => c !== cls).join(" "); }
+    };
+  }
+  addEventListener(type, fn) {
+    if (!this._listeners[type]) this._listeners[type] = [];
+    this._listeners[type].push(fn);
+  }
+  dispatchEvent(ev) {
+    const list = this._listeners[ev.type] || [];
+    for (const fn of list) fn.call(this, ev);
+    if (ev.bubbles && this.parentElement) this.parentElement.dispatchEvent(ev);
+    return true;
+  }
+  focus() {}
+  getBoundingClientRect() {
+    if (!this.parentElement) return { left: 100, top: 0, width: 300, height: 50 };
+    const idx = this.parentElement.childNodes.indexOf(this);
+    return { left: 100, top: (idx >= 0 ? idx : 0) * 60, width: 300, height: 50 };
+  }
+  compareDocumentPosition(other) {
+    if (!this.parentElement || !other.parentElement) return 0;
+    if (this.parentElement === other.parentElement) {
+      const idx1 = this.parentElement.childNodes.indexOf(this);
+      const idx2 = other.parentElement.childNodes.indexOf(other);
+      return idx1 < idx2 ? 4 : 2;
+    }
+    return 0;
+  }
+  closest(sel) {
+    let cur = this;
+    while (cur) {
+      if (cur.nodeType === 1 && cur.matches(sel)) return cur;
+      cur = cur.parentElement;
+    }
+    return null;
+  }
+  matches(sel) {
+    if (!sel || this.nodeType !== 1) return false;
+    const parts = sel.split(",").map(s => s.trim()).filter(Boolean);
+    for (const p of parts) {
+      if (this.matchesSingle(p)) return true;
+    }
+    return false;
+  }
+  matchesSingle(p) {
+    if (p === "*") return true;
+    if (p.includes(":nth-of-type(")) p = p.replace(/:nth-of-type\(\d+\)/g, "");
+    if (p.includes(" > ")) {
+      const segs = p.split(" > ");
+      return this.matchesSingle(segs[segs.length - 1]);
+    }
+    if (p.includes(" ")) {
+      const segs = p.split(/\s+/);
+      return this.matchesSingle(segs[segs.length - 1]);
+    }
+
+    let elTag = this.tagName.toLowerCase();
+    let rem = p;
+
+    const tagMatch = rem.match(/^([a-zA-Z0-9_-]+)/);
+    if (tagMatch) {
+      if (tagMatch[1].toLowerCase() !== elTag) return false;
+      rem = rem.slice(tagMatch[1].length);
+      if (!rem) return true;
+    }
+
+    const classMatch = rem.match(/^\.([a-zA-Z0-9_-]+)/);
+    if (classMatch) {
+      if (!this.classList.contains(classMatch[1])) return false;
+      rem = rem.slice(classMatch[0].length);
+      if (!rem) return true;
+    }
+
+    const idMatch = rem.match(/^#([a-zA-Z0-9_-]+)/);
+    if (idMatch) {
+      if (this.id !== idMatch[1]) return false;
+      rem = rem.slice(idMatch[0].length);
+      if (!rem) return true;
+    }
+
+    const attrContainsMatch = rem.match(/^\[([a-zA-Z0-9_-]+)\*=['"]?([^'"\]]+)['"]?\]/);
+    if (attrContainsMatch) {
+      const attr = attrContainsMatch[1];
+      const val = attrContainsMatch[2];
+      const actualVal = attr === "class" ? (this.className || "") : (this.getAttribute(attr) || "");
+      if (!actualVal.includes(val)) return false;
+      rem = rem.slice(attrContainsMatch[0].length);
+      if (!rem) return true;
+    }
+
+    const attrExactMatch = rem.match(/^\[([a-zA-Z0-9_-]+)=['"]?([^'"\]]+)['"]?\]/);
+    if (attrExactMatch) {
+      const attr = attrExactMatch[1];
+      const val = attrExactMatch[2];
+      const actualVal = attr === "class" ? (this.className || "") : (this.getAttribute(attr) || "");
+      if (actualVal !== val) return false;
+      rem = rem.slice(attrExactMatch[0].length);
+      if (!rem) return true;
+    }
+
+    const attrExistsMatch = rem.match(/^\[([a-zA-Z0-9_-]+)\]/);
+    if (attrExistsMatch) {
+      const attr = attrExistsMatch[1];
+      if (!this.hasAttribute(attr)) return false;
+      rem = rem.slice(attrExistsMatch[0].length);
+      if (!rem) return true;
+    }
+
+    if (rem.startsWith(".")) return this.classList.contains(rem.slice(1));
+    if (rem.startsWith("#")) return this.id === rem.slice(1);
+
+    return false;
+  }
+  querySelectorAll(sel) {
+    const results = [];
+    function check(node) {
+      if (node.nodeType === 1 && node.matches(sel)) results.push(node);
+      for (const child of node.childNodes) check(child);
+    }
+    for (const child of this.childNodes) check(child);
+    return results;
+  }
+  querySelector(sel) {
+    return this.querySelectorAll(sel)[0] || null;
+  }
+}
+
+function el(tag, className = "", attrs = {}, children = []) {
+  const node = new MockNode(tag);
+  node.className = className;
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  for (const c of children) {
+    if (typeof c === "string") node.appendChild(new MockNode(c, true));
+    else if (c) node.appendChild(c);
+  }
+  return node;
+}
+
+// Build exact learning.ccbp.in Question 5/15 DOM
+const header = el("div", "page-header", {}, [el("h1", "", {}, ["MCQ PRACTICE | LARGEST SUBARRAY SUM"])]);
+const stem = el("div", "sc-question-stem", {}, [
+  el("h2", "sc-stem-text", {}, ["Rearrange the following steps of Kadane's Algorithm in the correct order:"])
+]);
+const subheader = el("div", "sc-order-subheader", {}, ["Drag and Drop to Order"]);
+
+function makeRow(slotNum, tokens) {
+  const slotBadge = el("span", "sc-slot-badge", {}, [String(slotNum)]);
+  const gripHandle = el("div", "sc-grip-handle", { tabindex: "0" }, [el("svg", "six-dots-svg")]);
+  const textChildren = [];
+  for (const tok of tokens) {
+    if (tok.code) textChildren.push(el("code", "", {}, [tok.text]));
+    else textChildren.push(tok.text);
+  }
+  const content = el("div", "sc-row-content", {}, textChildren);
+  return el("div", "sc-dnd-row", { "data-rbd-draggable-id": `item-${slotNum}` }, [slotBadge, gripHandle, content]);
+}
+
+const row1 = makeRow(1, [{ text: "Update " }, { code: true, text: "maxSum" }, { text: " to be the maximum of " }, { code: true, text: "maxSum" }, { text: " and " }, { code: true, text: "curSum" }, { text: " ." }]);
+const row2 = makeRow(2, [{ text: "Initialize " }, { code: true, text: "curSum" }, { text: " to " }, { code: true, text: "0" }, { text: " and " }, { code: true, text: "maxSum" }, { text: " to negative infinity." }]);
+const row3 = makeRow(3, [{ text: "If " }, { code: true, text: "curSum" }, { text: " becomes negative, reset it to " }, { code: true, text: "0" }, { text: " ." }]);
+const row4 = makeRow(4, [{ text: "Iterate through each element of the array, adding the current element to " }, { code: true, text: "curSum" }, { text: " ." }]);
+const row5 = makeRow(5, [{ text: "Return " }, { code: true, text: "maxSum" }, { text: " ." }]);
+
+const orderContainer = el("div", "sc-order-container", { "data-rbd-droppable-id": "droppable-order" }, [row1, row2, row3, row4, row5]);
+
+const btnShow = el("button", "sc-btn-show", {}, ["SHOW ANSWER"]);
+const btnSubmit = el("button", "sc-btn-submit", { type: "submit" }, ["SUBMIT"]);
+const btnSkip = el("button", "sc-btn-skip", {}, ["SKIP"]);
+const actions = el("div", "sc-actions", {}, [btnShow, btnSubmit, btnSkip]);
+
+const cardEl = el("div", "sc-practice-card", {}, [header, stem, subheader, orderContainer, actions]);
+const doc = el("html", "", {}, [el("head"), el("body", "", {}, [cardEl])]);
+doc.body = doc.childNodes[1];
+doc.documentElement = doc;
+doc.querySelector = (sel) => doc.body.querySelector(sel);
+doc.querySelectorAll = (sel) => doc.body.querySelectorAll(sel);
+
+const sandbox = {
+  window: null,
+  document: doc,
+  getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1", cursor: "grab" }),
+  setTimeout: setTimeout,
+  clearTimeout: clearTimeout,
+  Node: { DOCUMENT_POSITION_FOLLOWING: 4, DOCUMENT_POSITION_PRECEDING: 2 }
+};
+sandbox.window = sandbox;
+
+// 1. Run extraction
+const extractorCode = fs.readFileSync(path.resolve(process.cwd(), "extension/extractor.js"), "utf8");
+const extractor = vm.runInNewContext(extractorCode, sandbox);
+const extResult = extractor.extractQuizFromDom();
+
+// 2. Attach React Fiber simulation to orderContainer
+let orderRows = [row1, row2, row3, row4, row5];
+orderContainer.__reactFiber$demo = {
+  memoizedProps: {
+    onDragEnd: (result) => {
+      const { source, destination } = result;
+      if (!destination || source.index === destination.index) return;
+      const [moved] = orderRows.splice(source.index, 1);
+      orderRows.splice(destination.index, 0, moved);
+      orderContainer.childNodes = orderRows.slice();
+    }
+  }
+};
+
+// 3. Run executor for target Kadane order: [B, D, A, C, E]
+const executorCode = fs.readFileSync(path.resolve(process.cwd(), "extension/executor.js"), "utf8");
+const executor = vm.runInNewContext(executorCode, sandbox);
+
+async function runTest() {
+  const targetOrderTexts = [
+    extResult.options[1], // B: Initialize curSum to 0 and maxSum to negative infinity.
+    extResult.options[3], // D: Iterate through each element of the array, adding the current element to curSum .
+    extResult.options[0], // A: Update maxSum to be the maximum of maxSum and curSum .
+    extResult.options[2], // C: If curSum becomes negative, reset it to 0 .
+    extResult.options[4]  // E: Return maxSum .
+  ];
+
+  const payload = {
+    q_type: "order",
+    optionSelectors: extResult.optionSelectors,
+    dragHandleSelectors: extResult.dragHandleSelectors,
+    options: extResult.options,
+    ordered_texts: targetOrderTexts
+  };
+
+  const actionRes = await executor.executeQuizAction(payload);
+  const finalLive = executor.getLiveOrderRows(doc, payload);
+  const finalClean = finalLive.map(r => executor.cleanItemText(r));
+
+  // 4. Also test broken reorder (unmoved items) to verify hard-abort gate
+  const brokenDoc = el("html", "", {}, [el("head"), el("body", "", {}, [
+    el("div", "broken-order", {}, [
+      el("div", "draggable-item", {}, ["Step X"]),
+      el("div", "draggable-item", {}, ["Step Y"])
+    ])
+  ])]);
+  brokenDoc.body = brokenDoc.childNodes[1];
+  brokenDoc.documentElement = brokenDoc;
+  brokenDoc.querySelector = (sel) => brokenDoc.body.querySelector(sel);
+  brokenDoc.querySelectorAll = (sel) => brokenDoc.body.querySelectorAll(sel);
+  const brokenSandbox = {
+    window: null,
+    document: brokenDoc,
+    getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+    setTimeout: setTimeout,
+    clearTimeout: clearTimeout,
+    Node: { DOCUMENT_POSITION_FOLLOWING: 4, DOCUMENT_POSITION_PRECEDING: 2 }
+  };
+  brokenSandbox.window = brokenSandbox;
+  const brokenExecutor = vm.runInNewContext(executorCode, brokenSandbox);
+  const brokenRes = await brokenExecutor.executeQuizAction({
+    q_type: "order",
+    options: ["Step X", "Step Y"],
+    ordered_texts: ["Step Y", "Step X"]
+  });
+
+  console.log(JSON.stringify({
+    extResult,
+    actionRes,
+    finalClean,
+    targetOrderTexts,
+    brokenRes
+  }));
+}
+
+runTest().catch(err => {
+  console.error(err);
+  process.exit(1);
+});
+"""
+        res = subprocess.run(
+            ["node", "-e", js_test],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            encoding="utf-8"
+        )
+        self.assertEqual(res.returncode, 0, f"Test 7 Node.js failed:\nSTDOUT: {res.stdout}\nSTDERR: {res.stderr}")
+        data = json.loads(res.stdout)
+
+        # 1. Assert extraction success and correct classification as q_type: "order"
+        ext = data["extResult"]
+        self.assertTrue(ext.get("success"), "Extractor failed to extract Kadane order question!")
+        self.assertEqual(ext.get("q_type"), "order", "Question misclassified as MCQ despite ordering banner/handles!")
+        self.assertEqual(len(ext.get("options", [])), 5, f"Expected 5 options, got: {ext.get('options')}")
+
+        # Assert no slot numbers or instruction subheaders in options
+        for opt in ext["options"]:
+            self.assertFalse(opt.startswith("1") or opt.startswith("2") or opt.startswith("3"), f"Slot number leaked: {opt}")
+            self.assertNotIn("Drag and Drop to Order", opt)
+
+        # Assert clean options extraction with code pills
+        self.assertEqual(ext["options"][0], "Update maxSum to be the maximum of maxSum and curSum .")
+        self.assertEqual(ext["options"][1], "Initialize curSum to 0 and maxSum to negative infinity.")
+        self.assertEqual(ext["options"][2], "If curSum becomes negative, reset it to 0 .")
+        self.assertEqual(ext["options"][3], "Iterate through each element of the array, adding the current element to curSum .")
+        self.assertEqual(ext["options"][4], "Return maxSum .")
+
+        # Assert dragHandleSelectors were populated
+        drag_handles = ext.get("dragHandleSelectors", [])
+        self.assertEqual(len(drag_handles), 5, f"Expected 5 drag handles, got {len(drag_handles)}")
+
+        # 2. Assert normalizer resolves all permutation formats to canonical key B,D,A,C,E
+        options = ext["options"]
+        test_permutations = [
+            ["B", "D", "A", "C", "E"],
+            "B -> D -> A -> C -> E",
+            "B > D > A > C > E",
+            "B - D - A - C - E",
+            "1. B, 2. D, 3. A, 4. C, 5. E",
+            [2, 4, 1, 3, 5],
+            "2, 4, 1, 3, 5",
+            "2 -> 4 -> 1 -> 3 -> 5",
+            [1, 3, 0, 2, 4]
+        ]
+        for candidate in test_permutations:
+            norm = normalize_order_answer(candidate, options)
+            self.assertEqual(norm.canonical_key, "B,D,A,C,E", f"Candidate {candidate} failed: {norm.canonical_key}")
+            self.assertEqual(norm.permutation_indices, [1, 3, 0, 2, 4], f"Candidate {candidate} indices failed")
+
+        # 3. Assert execution success and pre-submit order verification gate
+        act = data["actionRes"]
+        self.assertTrue(act.get("ok"), "Order action returned ok: false")
+        self.assertTrue(act.get("selected"), "Order action returned selected: false")
+        self.assertTrue(act.get("verified_order"), "Order action did not set verified_order: true")
+
+        # Assert final live DOM order is exact Kadane order [B, D, A, C, E]
+        self.assertEqual(data["finalClean"], data["targetOrderTexts"])
+
+        # 4. Assert broken/unmoved reorder triggers ORDER_REORDER_FAILED pre-submit gate
+        broken = data["brokenRes"]
+        self.assertFalse(broken.get("ok"), "Broken reorder should have returned ok: false")
+        self.assertFalse(broken.get("selected"), "Broken reorder should have returned selected: false")
+        self.assertEqual(broken.get("error"), "ORDER_REORDER_FAILED", f"Expected ORDER_REORDER_FAILED, got {broken.get('error')}")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
